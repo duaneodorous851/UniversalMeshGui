@@ -1,6 +1,9 @@
 # UniversalMesh GUI (v1.0.0)
 
+UniversalMesh GUI uses UniversalMesh library by https://github.com/johestephan/UniversalMesh
+
 A lightweight, Layer-3 mesh networking protocol built on top of ESP-NOW for ESP32 and ESP8266. Enables seamless, long-range communication between nodes without a central Wi-Fi router.
+made by https://github.com/johestephan/UniversalMesh
 
 ## Table of Contents
 
