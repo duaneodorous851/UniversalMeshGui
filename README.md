@@ -19,6 +19,7 @@
   - [Configuration](#configuration)
   - [Build](#build)
 - [Sensor Node Behaviour](#sensor-node-behaviour)
+- [Remote Commands](#remote-commands)
 - [Coordinator Web Dashboard](#coordinator-web-dashboard)
   - [Panels](#panels)
   - [UI Features](#ui-features)
@@ -216,6 +217,48 @@ Each sensor node:
 2. Once the coordinator is found, sends an **AppId `0x06`** Node Announce packet with its `NODE_NAME` string.
 3. Every `HEARTBEAT_INTERVAL` ms (default 60 s), sends an **AppId `0x05`** heartbeat and re-sends the announce.
 4. Sends sensor readings (e.g. temperature/humidity) as **AppId `0x01`** data packets.
+
+---
+
+## Remote Commands
+
+Commands can be sent from the dashboard **Send Message** panel (pick from the **Cmd** dropdown or type freely) or via the `/api/tx` REST endpoint.  
+Commands are plain-text `cmd:<name>` strings addressed to a specific node MAC. Nodes only execute commands whose `srcMac` matches the coordinator — senders with an unknown MAC are silently ignored.
+
+For every recognised command the node sends an ACK first:
+
+```
+command received:<name>
+```
+
+Then sends command-specific reply packets (same `appId` as the incoming command).
+
+### `cmd:reboot`
+
+Reboots the node after a 100 ms flush delay. No data packet beyond the ACK.
+
+### `cmd:info`
+
+Single compact reply:
+
+```
+info:u=<uptime>s,h=<freeHeap>,r=<rssi>,ch=<channel>,m=<mac[-2]><mac[-1]>
+```
+
+Example: `info:u=142s,h=213456,r=-62,ch=1,m=3AB1`
+
+### `cmd:info:long`
+
+Three packets sent 40 ms apart from the node's `loop()` (not the receive callback):
+
+| Packet | Format |
+| :--- | :--- |
+| `info1` | `info1:n=<nodeName>,mac=<AA:BB:CC:DD:EE:FF>` |
+| `info2` | `info2:up=<uptime>s,heap=<freeHeap>,rssi=<rssi>,ch=<channel>` |
+| `info3` (ESP32) | `info3:chip=<model>,rev=<revision>,sdk=<sdkVersion>` |
+| `info3` (ESP8266) | `info3:chip=ESP8266,id=<chipId>,sdk=<sdkVersion>` |
+
+All reply packets appear in the packet log and are forwarded to MQTT on ETH Elite builds.
 
 ---
 
