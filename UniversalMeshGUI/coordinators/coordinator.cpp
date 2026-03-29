@@ -37,7 +37,7 @@ static PubSubClient  _mqtt(_mqttNetClient);
 static unsigned long _mqttLastAttempt = 0;
 constexpr unsigned long MQTT_RECONNECT_MS = 5000;
 static unsigned long _mqttLastCoordPub = 0;
-constexpr unsigned long MQTT_COORD_PUB_MS = 30000;
+constexpr unsigned long MQTT_COORD_PUB_MS = 60000;
 
 // Publish queue — enqueued from ESP-NOW callback task, drained in loop()
 #define MQTT_QUEUE_SIZE 8
@@ -250,16 +250,19 @@ static void mqttPublishCoordinatorData(bool force = false) {
   if (!force && (now - _mqttLastCoordPub < MQTT_COORD_PUB_MS)) return;
 
   char topic[96];
-  char payload[220];
+  char payload[280];
   bool ethOk = isEthConnected();
   bool wifiOk = WiFi.status() == WL_CONNECTED;
   String ip = ethOk ? ETH.localIP().toString() : WiFi.localIP().toString();
   int rssi = wifiOk ? WiFi.RSSI() : 0;
+  String ts = isNtpSynced() ? getNtpTimeStr() : String("unsynced");
+  ts.replace(" ", "T");
 
   snprintf(topic, sizeof(topic), "%s/%s/coordinator/status", MESH_NETWORK, MESH_HOSTNAME);
   snprintf(payload, sizeof(payload),
-           "{\"name\":\"%s\",\"uptime_s\":%lu,\"heap\":%u,\"mesh_ch\":%u,\"wifi_connected\":%s,\"eth_connected\":%s,\"rssi\":%d,\"ip\":\"%s\"}",
+           "{\"name\":\"%s\",\"ts\":\"%s\",\"uptime_s\":%lu,\"heap\":%u,\"mesh_ch\":%u,\"wifi_connected\":%s,\"eth_connected\":%s,\"rssi\":%d,\"ip\":\"%s\"}",
            MESH_HOSTNAME,
+           ts.c_str(),
            now / 1000UL,
            ESP.getFreeHeap(),
            getMeshChannel(),
@@ -282,10 +285,13 @@ static void mqttConnect() {
   _mqttLastAttempt = now;
   Serial.printf("[MQTT] Connecting to %s:%d...", MQTT_BROKER, MQTT_PORT);
   String clientId = "mesh-" + String(MESH_HOSTNAME);
+  char availabilityTopic[96];
+  snprintf(availabilityTopic, sizeof(availabilityTopic), "%s/%s/coordinator/availability", MESH_NETWORK, MESH_HOSTNAME);
   const char* user = strlen(MQTT_USER) ? MQTT_USER : nullptr;
   const char* pass = strlen(MQTT_PASS) ? MQTT_PASS : nullptr;
-  if (_mqtt.connect(clientId.c_str(), user, pass)) {
+  if (_mqtt.connect(clientId.c_str(), user, pass, availabilityTopic, 1, true, "offline")) {
     Serial.println(" OK");
+    _mqtt.publish(availabilityTopic, "online", true);
     mqttPublishCoordinatorData(true);
   } else {
     Serial.printf(" failed rc=%d\n", _mqtt.state());
