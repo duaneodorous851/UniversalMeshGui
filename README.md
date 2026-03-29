@@ -1,4 +1,4 @@
-# UniversalMesh GUI (v1.0.0)
+# UniversalMesh GUI
 
 **UniversalMesh GUI** is a ready-to-flash firmware collection for coordinators and sensor nodes, built on top of the [UniversalMesh](https://github.com/johestephan/UniversalMesh) mesh networking library. It provides a full-stack solution: node firmware that auto-discovers the coordinator and sends sensor data over ESP-NOW, and a coordinator firmware that bridges the mesh to your network and serves a real-time web dashboard — all without writing any code.
 
@@ -13,7 +13,6 @@
 - [Supported Hardware](#supported-hardware)
   - [Coordinators](#coordinators)
   - [Sensor Nodes](#sensor-nodes)
-  - [Display Gateway](#display-gateway)
 - [Getting Started](#getting-started)
   - [Installation](#installation)
   - [Configuration](#configuration)
@@ -65,30 +64,33 @@ The library uses a fixed-size packed struct:
 
 | Field | Size | Description |
 | :--- | :--- | :--- |
-| `type` | 1 byte | `0x12` PING, `0x13` PONG, `0x14` ACK, `0x15` DATA |
+| `type` | 1 byte | `0x12` PING, `0x13` PONG, `0x14` ACK, `0x15` DATA, `0x16` KEY_REQ, `0x17` SECURE_DATA, `0x18` PARANOID_DATA |
 | `ttl` | 1 byte | Time-to-live hop limit (default 4) |
 | `msgId` | 4 bytes | Unique message ID for deduplication |
 | `destMac` | 6 bytes | Destination or `FF:FF:FF:FF:FF:FF` for broadcast |
 | `srcMac` | 6 bytes | Original sender MAC |
 | `appId` | 1 byte | Application multiplexer — see table below |
-| `payloadLen` | 1 byte | Payload length (max 64) |
-| `payload` | 64 bytes | Raw binary payload |
+| `payloadLen` | 1 byte | Payload length (max 200) |
+| `payload` | 200 bytes | Raw binary payload |
 
 ### Packet Type Reference
 
 | Type | Name | Description |
 | :--- | :--- | :--- |
 | `0x00–0x11` | *(reserved)* | Reserved for future protocol extensions |
-| `0x12` | PING | Broadcast by a node to discover the coordinator. Every node auto-replies with a PONG |
-| `0x13` | PONG | Reply to a PING. `payload[0]=0x01` = coordinator, `payload[0]=0x00` = regular node |
+| `0x12` | PING | Broadcast by a node to discover the coordinator. Every mesh participant can reply with a PONG |
+| `0x13` | PONG | Reply to PING. Coordinator marks itself with `appId=0xFF`, nodes use `appId=0x00` |
 | `0x14` | ACK | Acknowledgement (reserved for future use) |
 | `0x15` | DATA | Application data packet — see AppId table below |
+| `0x16` | KEY_REQ | Node requests key material from coordinator |
+| `0x17` | SECURE_DATA | AES-encrypted payload (library-managed on ESP32) |
+| `0x18` | PARANOID_DATA | End-to-end encrypted payload pass-through |
 
 ### AppId Reference
 
 | AppId | Name | Description |
 | :--- | :--- | :--- |
-| `0x00` | Protocol | Reserved for mesh control (PING/PONG) |
+| `0x00` | Protocol | Mesh control / discovery traffic |
 | `0x01` | Text | Human-readable string payload |
 | `0x02` | Raw Hex | Raw binary payload |
 | `0x05` | Heartbeat | Periodic alive signal (single byte) |
@@ -98,19 +100,19 @@ The library uses a fixed-size packed struct:
 
 When a sensor node boots it has no knowledge of the coordinator's MAC address. Discovery works as follows:
 
-1. The node broadcasts a **PING** (`type=0x12`) to `FF:FF:FF:FF:FF:FF`.
-2. Every node on the mesh that receives the PING **auto-replies with a PONG** (`type=0x13`, `appId=0x00`).
-3. Only the coordinator sets `payload[0]=0x01` in its PONG. All other nodes send `payload[0]=0x00`.
-4. The sensor node ignores PONGs with `payload[0]=0x00` and locks onto the first PONG where `payload[0]=0x01` as its coordinator.
-5. If no coordinator PONG is received within 10 seconds, the node retries the broadcast automatically.
+1. The node sweeps channels and sends discovery **PING** probes.
+2. Mesh participants reply with **PONG**.
+3. The coordinator identifies itself using `appId=0xFF` in PONG replies.
+4. The sensor node ignores non-coordinator PONGs and locks onto the first `appId=0xFF` responder.
+5. If discovery fails, the node retries periodically.
 
 This prevents a sensor node from accidentally treating a relay node or another sensor as the coordinator.
 
-To mark a node as coordinator, pass `true` to `begin()`:
+To mark a node as coordinator, pass `MESH_COORDINATOR` to `begin()`:
 
 ```cpp
-mesh.begin(WIFI_CHANNEL, true);   // coordinator — PONG replies carry payload[0]=0x01
-mesh.begin(WIFI_CHANNEL);         // sensor / relay — PONG replies carry payload[0]=0x00
+mesh.begin(WIFI_CHANNEL, MESH_COORDINATOR); // coordinator — PONG replies carry appId 0xFF
+mesh.begin(WIFI_CHANNEL, MESH_NODE);        // sensor / relay — PONG replies carry appId 0x00
 ```
 
 ---
@@ -131,17 +133,13 @@ mesh.begin(WIFI_CHANNEL);         // sensor / relay — PONG replies carry paylo
 
 | Environment | Board | Notes |
 | :--- | :--- | :--- |
-| `sensor_node_esp32` | Generic ESP32 Dev Module | 4 MB flash; sends internal CPU temperature |
-| `sensor_node_c6` | ESP32-C6 DevKitC-1 | USB CDC; sends internal CPU temperature |
-| `sensor_node_t8_s3` | LilyGo T8-S3 | 16 MB flash, PSRAM; sends internal CPU temperature |
-| `sensor_wemos_d1` | Wemos D1 / mini (ESP8266) | SHT30 real sensor; optional OLED via `HAS_DISPLAY_SHIELD` |
-| `sensor_esp8266` | NodeMCU v2 (ESP8266) | Generic ESP8266 sensor node; sends simulated temperature |
-
-### Display Gateway
-
-| Environment | Board | Notes |
-| :--- | :--- | :--- |
-| `gateway_esp8266` | NodeMCU v2 (ESP8266) | Receives mesh packets and displays them on SSD1306 OLED |
+| `node_sensor_esp32` | Generic ESP32 Dev Module | 4 MB flash; sends internal CPU temperature |
+| `node_sensor_c6` | ESP32-C6 DevKitC-1 | USB CDC; sends internal CPU temperature |
+| `node_sensor_t8_s3` | LilyGo T8-S3 | 16 MB flash, PSRAM; sends internal CPU temperature |
+| `node_sensor_wemos_d1` | Wemos D1 / mini (ESP8266) | SHT30 sensor; optional OLED via `HAS_DISPLAY_SHIELD` |
+| `node_sensor_esp8266` | NodeMCU v2 (ESP8266) | Generic ESP8266 node; sends simulated temperature |
+| `node_sensor_esp32_pir` | Generic ESP32 Dev Module | PIR-enabled node profile |
+| `node_sensor_esp8266_pir` | NodeMCU v2 (ESP8266) | PIR-enabled node profile |
 
 ---
 
@@ -149,9 +147,10 @@ mesh.begin(WIFI_CHANNEL);         // sensor / relay — PONG replies carry paylo
 
 ### Installation
 
-1. Clone or copy the `lib/UniversalMesh/` folder into your project's `lib/` directory.
-2. Create `include/secrets.h` with your credentials (see [Configuration](#configuration) below).
-3. All ESP32 environments use the `pioarduino` platform (set as the default in `[platformio]`). ESP8266 environments (`sensor_wemos_d1`, `gateway_esp8266`) use the standard `espressif8266` platform — no changes needed.
+1. Clone this repository.
+2. Create `include/secrets.h` from `include/secrets.example.h` and fill in your credentials.
+3. Build with one of the PlatformIO environments from `UniversalMeshGUI/coordinators.ini` or `UniversalMeshGUI/nodes.ini`.
+4. ESP32 environments use the `pioarduino` ESP32 platform from `platformio.ini`; ESP8266 node environments use `espressif8266` (set per environment).
 
 ### Configuration
 
@@ -199,6 +198,7 @@ Flash and monitor a specific environment:
 
 ```
 pio run -e coordinator_c6 -t upload -t monitor
+pio run -e node_sensor_esp32 -t upload -t monitor
 ```
 
 OTA upload (ETH Elite):
@@ -213,7 +213,7 @@ pio run -e coordinator_eth_elite_ota -t upload
 
 Each sensor node:
 
-1. On boot, broadcasts a **PING** to discover the coordinator (see [Coordinator Discovery](#coordinator-discovery)). Retries every 10 s until a coordinator PONG is received.
+1. On boot, starts discovery to find the coordinator (see [Coordinator Discovery](#coordinator-discovery)); if no coordinator is found, discovery is retried periodically.
 2. Once the coordinator is found, sends an **AppId `0x06`** Node Announce packet with its `NODE_NAME` string.
 3. Every `HEARTBEAT_INTERVAL` ms (default 60 s), sends an **AppId `0x05`** heartbeat and re-sends the announce.
 4. Sends sensor readings (e.g. temperature/humidity) as **AppId `0x01`** data packets.
@@ -239,26 +239,17 @@ Reboots the node after a 100 ms flush delay. No data packet beyond the ACK.
 
 ### `cmd:info`
 
-Single compact reply:
+Single JSON reply (fits in one packet with the 200-byte payload limit):
 
+```json
+{"n":"sensor-esp32-green","mac":"AA:BB:CC:DD:EE:FF","up":142,"heap":213456,"rssi":-62,"ch":1,"chip":"ESP32","rev":1}
 ```
-info:u=<uptime>s,h=<freeHeap>,r=<rssi>,ch=<channel>,m=<mac[-2]><mac[-1]>
-```
-
-Example: `info:u=142s,h=213456,r=-62,ch=1,m=3AB1`
 
 ### `cmd:info:long`
 
-Three packets sent 40 ms apart from the node's `loop()` (not the receive callback):
+In the current node firmware, `cmd:info` and `cmd:info:long` are handled the same way and return the same single JSON payload.
 
-| Packet | Format |
-| :--- | :--- |
-| `info1` | `info1:n=<nodeName>,mac=<AA:BB:CC:DD:EE:FF>` |
-| `info2` | `info2:up=<uptime>s,heap=<freeHeap>,rssi=<rssi>,ch=<channel>` |
-| `info3` (ESP32) | `info3:chip=<model>,rev=<revision>,sdk=<sdkVersion>` |
-| `info3` (ESP8266) | `info3:chip=ESP8266,id=<chipId>,sdk=<sdkVersion>` |
-
-All reply packets appear in the packet log and are forwarded to MQTT on ETH Elite builds.
+Replies appear in the packet log and are forwarded to MQTT on ETH Elite builds.
 
 ---
 
@@ -279,7 +270,7 @@ The coordinator serves a responsive single-page dashboard on port 80.
 | **Packet Log** | Paginated live log (200 entries with PSRAM, 10 without). Shows type, sender, app ID, payload, timestamp. Relayed packets highlighted |
 | **Topology Map** | Force-directed canvas graph of all nodes and relay paths, inferred from packet headers. Click a node for details. Controls: Freeze/Resume physics, Reset layout, toggle MAC labels, toggle edge age labels, drag to pin a node, double-click to unpin, pan by dragging background, export as PNG |
 | **Serial Console** | Live stream of the coordinator's internal log — like a web-based serial monitor |
-| **Quick Actions (navbar)** | Ping all nodes (discovery), toggle topology panel, toggle serial console panel, reboot coordinator, toggle dark/light theme |
+| **Quick Actions (navbar)** | Toggle topology panel, toggle serial console panel, reboot coordinator, toggle dark/light theme |
 
 ### UI Features
 
@@ -294,7 +285,7 @@ The coordinator serves a responsive single-page dashboard on port 80.
 | :--- | :--- | :--- |
 | `/api/status` | GET | Coordinator status (uptime, heap, IP, channel, NTP time, ETH info) |
 | `/api/nodes` | GET | Node table (MAC, last-seen seconds, name) |
-| `/api/log` | GET | Recent packet log (type, src, origSrc, appId, payload, age) |
+| `/api/log` | GET | Recent packet log (type, src, origSrc, appId, payload, age_s) |
 | `/api/serial` | GET | Recent serial output (last 40 lines) |
 | `/api/tx` | POST | Send a packet into the mesh (`dest`, `appId`, hex `payload`, `ttl`) |
 | `/api/discover` | GET | Broadcast a PING to discover all mesh nodes |
@@ -308,9 +299,13 @@ The coordinator serves a responsive single-page dashboard on port 80.
 The `coordinator_eth_elite` / `coordinator_eth_elite_ota` builds add:
 
 - **W5500 Ethernet** as primary network. On boot, waits up to 5 s for cable, then up to 60 s for DHCP. Falls back to WiFi if no cable is detected.
-- **MQTT Bridge** — DATA packets (appId `0x01`, `0x05`, `0x06`) are automatically published to:
+- **MQTT Bridge** — DATA packets are published to:
   ```
   {MESH_NETWORK}/{MESH_HOSTNAME}/nodes/{nodeName}/{appId}
+  ```
+- **Coordinator status topic** — retained runtime status is published to:
+  ```
+  {MESH_NETWORK}/{MESH_HOSTNAME}/coordinator/status
   ```
   Broker, port and credentials are set in `secrets.h`.
 - **NTP sync** — wall-clock time displayed in dashboard and packet log.
@@ -364,9 +359,8 @@ Edit `COORDINATOR_IP` at the top of the file to point to your coordinator.
 | JSON | ArduinoJson 7.x | All |
 | MQTT | PubSubClient 2.x | Coordinator (ETH Elite) |
 | RGB LED | Adafruit NeoPixel 1.12.3 | Coordinator C6 |
-| Temperature / humidity | Adafruit SHT31 Library | `sensor_wemos_d1` |
-| OLED display (ESP32) | U8g2 | `sensor_wemos_d1` |
-| OLED display (ESP8266) | Adafruit SSD1306 + GFX | `gateway_esp8266` |
+| Temperature / humidity | Adafruit SHT31 Library | `node_sensor_wemos_d1` |
+| OLED display | U8g2 | `node_sensor_wemos_d1` |
 | Coordinator MCU | ESP32-C6, ESP32-S3, LilyGo T8-S3, LilyGo T-ETH Elite | Coordinator |
 | Sensor MCU | Generic ESP32, ESP32-C6, LilyGo T8-S3 (ESP32-S3), Wemos D1 (ESP8266) | Sensor nodes |
 
