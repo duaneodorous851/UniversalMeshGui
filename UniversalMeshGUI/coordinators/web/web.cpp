@@ -225,11 +225,13 @@ R"rawliteral(
         <button class="btn btn-secondary" onclick="topoReset()" title="Reset layout">&#8635; Reset</button>
         <button class="btn btn-secondary" onclick="topoToggleMac()" id="topo-mac-btn" title="Toggle MAC labels" style="opacity:0.55">MAC</button>
         <button class="btn btn-secondary" onclick="topoToggleAge()" id="topo-age-btn" title="Toggle edge age labels" style="opacity:0.55">Age</button>
+        <button class="btn btn-secondary" onclick="topoToggleFlow()" id="topo-flow-btn" title="Toggle live data-flow particles">&#9670; Flow</button>
         <button class="btn btn-secondary" onclick="topoExportPng()" title="Export as PNG">&#8681; PNG</button>
+        <button class="btn btn-secondary" onclick="topoFullscreen()" id="topo-fs-btn" title="Full screen">&#x26F6; Full</button>
       </div>
       <canvas id="topo-canvas" width="700" height="340" style="width:100%;display:block;border-radius:4px;background:var(--bg);cursor:grab"></canvas>
       <div id="topo-info" style="min-height:2.5em;margin-top:8px;padding:8px;border-radius:4px;background:var(--row-bg);font-size:0.88em;line-height:1.6"></div>
-      <div style="margin-top:4px;font-size:0.8em;color:var(--sub)">Inferred from relay paths in packet log &mdash; blue = coordinator &middot; green = node &middot; click to select &middot; drag to pin &middot; double-click to unpin</div>
+      <div style="margin-top:4px;font-size:0.8em;color:var(--sub)">Inferred from relay paths in packet log &mdash; blue = coordinator &middot; green = node &middot; &#9670; flow: <span style="color:#3fb950">&#9632;</span> data &middot; <span style="color:#f0c040">&#9632;</span> heartbeat &middot; <span style="color:#58a6ff">&#9632;</span> announce &middot; click to select &middot; drag to pin &middot; double-click to unpin</div>
     </div>
   </div>
   <div id="console-panel" style="display:none;grid-column:1/-1">
@@ -434,7 +436,8 @@ R"rawliteral(
 
     // --- Mesh topology force graph ---
     let _topoRunning=false,_topoAnim=null,_topoNodes=[],_topoEdges=[],_topoMap=new Map(),_topoSel=null,_stCache={};
-    let _topoPanX=0,_topoPanY=0,_topoDrag=null,_topoPanning=false,_topoPanLast={x:0,y:0},_topoFrozen=false,_topoDragMoved=false,_topoShowMac=false,_topoShowAge=false;
+    let _topoPanX=0,_topoPanY=0,_topoDrag=null,_topoPanning=false,_topoPanLast={x:0,y:0},_topoFrozen=false,_topoDragMoved=false,_topoShowMac=false,_topoShowAge=false,_topoShowFlow=true;
+    let _topoParticles=[],_topoSeenPkts=new Set();
     function toggleTopology(){
       const p=document.getElementById('topo-panel');
       const show=p.style.display==='none';
@@ -522,6 +525,34 @@ R"rawliteral(
       _topoShowAge=!_topoShowAge;
       const btn=document.getElementById('topo-age-btn');
       btn.style.opacity=_topoShowAge?'1':'0.55';btn.style.fontWeight=_topoShowAge?'bold':'normal';
+    }
+    function topoToggleFlow(){
+      _topoShowFlow=!_topoShowFlow;
+      const btn=document.getElementById('topo-flow-btn');
+      btn.style.opacity=_topoShowFlow?'1':'0.55';btn.style.fontWeight=_topoShowFlow?'bold':'normal';
+      if(!_topoShowFlow) _topoParticles=[];
+    }
+    function topoFullscreen(){
+      const el=document.getElementById('topo-panel');
+      if(document.fullscreenElement) document.exitFullscreen();
+      else el.requestFullscreen();
+    }
+    document.addEventListener('fullscreenchange',()=>{
+      const cv=document.getElementById('topo-canvas');
+      const btn=document.getElementById('topo-fs-btn');
+      if(document.fullscreenElement){
+        cv.width=window.screen.width;cv.height=Math.max(300,window.screen.height-110);
+        btn.textContent='\u2715 Exit Full';
+      } else {
+        cv.width=700;cv.height=340;
+        btn.textContent='\u26F6 Full';
+      }
+      fixCoord();
+    });
+    function spawnFlowParticle(fromId,toId,color,delayMs){
+      if(!_topoShowFlow||!_topoRunning) return;
+      const now=performance.now();
+      _topoParticles.push({from:fromId,to:toId,t:0,dur:900,color:color,lastMs:now,startMs:now+(delayMs||0)});
     }
     function topoExportPng(){
       const cv=document.getElementById('topo-canvas');
@@ -644,6 +675,22 @@ function fixCoord(){
           }
         }
       });
+      // --- Flow particles ---
+      if(_topoShowFlow){
+        const nowMs=performance.now();
+        _topoParticles=_topoParticles.filter(p=>{
+          const a=nm.get(p.from),b=nm.get(p.to); if(!a||!b) return false;
+          if(nowMs<p.startMs){p.lastMs=nowMs;return true;}
+          p.t+=(nowMs-p.lastMs)/p.dur; p.lastMs=nowMs;
+          if(p.t>=1) return false;
+          const x=a.x+(b.x-a.x)*p.t, y=a.y+(b.y-a.y)*p.t;
+          const alpha=p.t<0.75?1:(1-p.t)/0.25;
+          ctx.beginPath();ctx.arc(x,y,5,0,Math.PI*2);
+          ctx.globalAlpha=alpha;ctx.fillStyle=p.color;ctx.fill();
+          ctx.globalAlpha=1;
+          return true;
+        });
+      }
       ns.forEach(n=>{
         const r=n.isCoord?15:10;
         if(n===_topoSel){
@@ -724,7 +771,23 @@ function fixCoord(){
         const _fetchNow=Date.now();
         logPackets_=lg.packets?lg.packets.slice().reverse().map(p=>({...p,_time:new Date(_fetchNow-p.age_s*1000)})):[];
         renderLog();
-        if(_topoRunning){ mergeTopology(); updateTopoLastSeen(nd.nodes); renderTopoInfo(); }
+        if(_topoRunning){
+          mergeTopology(); updateTopoLastSeen(nd.nodes); renderTopoInfo();
+          if(_topoShowFlow){
+            const coord=coordMac_.toUpperCase();
+            logPackets_.forEach(p=>{
+              if(p.age_s>2) return;
+              const key=p.origSrc+'~'+p.src+'~'+p.appId+'~'+Math.round(p._time.getTime()/500);
+              if(_topoSeenPkts.has(key)) return;
+              _topoSeenPkts.add(key);
+              const color=p.appId===1?'#3fb950':p.appId===5?'#f0c040':p.appId===6?'#58a6ff':'#da70d6';
+              const src=p.src.toUpperCase(), orig=p.origSrc.toUpperCase();
+              if(orig!==src){ spawnFlowParticle(orig,src,color,0); spawnFlowParticle(src,coord,color,900); }
+              else spawnFlowParticle(orig,coord,color);
+            });
+            if(_topoSeenPkts.size>400) _topoSeenPkts.clear();
+          }
+        }
         set('tick','last update: '+new Date().toLocaleTimeString());
       }catch(e){}
     }
