@@ -384,12 +384,29 @@ R"rawliteral(
       document.getElementById('log-prev').style.visibility=logPage_>0?'visible':'hidden';
       document.getElementById('log-next').style.visibility=logPage_<total-1?'visible':'hidden';
       page.forEach(p=>{
-        const relayed=p.origSrc&&p.src.toUpperCase()!==p.origSrc.toUpperCase();
-        lb.innerHTML+='<tr'+(relayed?' class="relayed"':'')+'>'
+        const srcHop=(p.src||'').toUpperCase();
+        const srcOrig=(p.origSrc||p.src||'').toUpperCase();
+        const relayed=!!p.origSrc&&srcHop!==srcOrig;
+        const coordinatorPong=(p.type===0x13&&p.appId===0xFF);
+        const rowClass=coordinatorPong?'coordinator-pong':(relayed?'relayed':'');
+        const fromMac=(p.origSrc||p.src)||'';
+        const fromKey=fromMac.toUpperCase();
+        const fromName=(fromKey===coordMac_?'[coordinator]':(nodeNames_[fromKey]||fromMac));
+        const viaName=(nodeNames_[srcHop]||p.src||'');
+        const fromCell=fromName+(relayed?(' <span class="muted">via '+viaName+'</span>'):'');
+        const payloadCell=(
+          p.appId===0x06 ? ('[announce] '+p.payload) :
+          p.appId===0x05 ? ('[heartbeat] '+(nodeNames_[srcOrig]||nodeNames_[srcHop]||p.origSrc||p.src)) :
+          ((p.type===0x12||p.type===0x13)&&(p.appId===0x00||p.appId===0xFF)) ?
+            ((p.type===0x12?'[discovery ping]':(p.appId===0xFF?'[coordinator pong]':'[discovery pong]'))
+              +(relayed?' <span class="muted">via '+viaName+'</span>':'')) :
+          p.payload
+        );
+        lb.innerHTML+='<tr'+(rowClass?(' class="'+rowClass+'"'):'')+'>'
           +'<td><span class="tag">'+({0x12:'PING',0x13:'PONG',0x15:'DATA'}[p.type]||'0x'+p.type.toString(16).padStart(2,'0'))+'</span></td>'
-          +'<td>'+(nodeNames_[p.src.toUpperCase()]||p.src)+'</td>'
+          +'<td>'+fromCell+'</td>'
           +'<td>0x'+p.appId.toString(16).padStart(2,'0')+'</td>'
-          +'<td>'+(p.appId===0x06?'[announce] '+p.payload:p.appId===0x05?'[heartbeat] '+(nodeNames_[p.origSrc.toUpperCase()]||nodeNames_[p.src.toUpperCase()]||p.origSrc):p.appId===0x00?({0x12:'[discovery ping]',0x13:'[discovery pong]'}[p.type]||'[discovery]')+(p.origSrc!==p.src?' <span class="muted">from '+(p.origSrc.toUpperCase()===coordMac_?'[coordinator]':(nodeNames_[p.origSrc.toUpperCase()]||p.origSrc))+'</span>':''):p.payload)+'</td>'
+          +'<td>'+payloadCell+'</td>'
           +'<td>'+(p._time?p._time.toTimeString().slice(0,8):p.age_s+'s ago')+'</td>'
           +'</tr>';
       });

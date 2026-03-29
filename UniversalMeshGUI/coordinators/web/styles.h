@@ -59,6 +59,8 @@
 "tr:nth-child(even) td{background:rgba(0,0,0,0.06)}" \
 "tr.relayed td:first-child{border-left:3px solid #2dd4ff;background:transparent!important;box-shadow:-2px 0 8px rgba(45,212,255,0.35),inset 1px 0 0 rgba(45,212,255,0.45)}" \
 "[data-theme=dark] tr.relayed td:first-child{border-left:3px solid #2dd4ff;background:transparent!important;box-shadow:-2px 0 10px rgba(45,212,255,0.45),inset 1px 0 0 rgba(45,212,255,0.55)}" \
+"tr.coordinator-pong td:first-child{border-left:3px solid #f59e0b;background:transparent!important;box-shadow:-2px 0 8px rgba(245,158,11,0.3),inset 1px 0 0 rgba(245,158,11,0.45)}" \
+"[data-theme=dark] tr.coordinator-pong td:first-child{border-left:3px solid #f59e0b;background:transparent!important;box-shadow:-2px 0 10px rgba(245,158,11,0.45),inset 1px 0 0 rgba(245,158,11,0.55)}" \
 /* --- Buttons (MMDVM style: solid filled, semantic colours) --- */ \
 ".btn{display:inline-block;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;padding:8px 16px;border:none;border-radius:4px;cursor:pointer;transition:background-color .3s ease;text-align:center;margin:2px}" \
 ".btn:hover:not(:disabled){opacity:.9}" \
