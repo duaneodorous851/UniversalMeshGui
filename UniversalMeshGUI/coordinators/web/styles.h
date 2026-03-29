@@ -38,16 +38,17 @@
 /* --- Layout --- */ \
 ".container{max-width:1000px;margin:20px auto;padding:0 16px}" \
 ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:15px;margin-bottom:15px}" \
+".grid>*{min-width:0}" \
 /* --- Typography --- */ \
 "h1{color:#007bff;border-bottom:2px solid #007bff;padding-bottom:10px;margin:0 0 20px 0;text-align:center;font-size:1.4em}" \
 "h2{color:var(--muted);font-size:0.82em;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px;font-weight:bold}" \
 /* --- Cards --- */ \
-".card{background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:20px}" \
+".card{background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:20px;min-width:0}" \
 /* --- Row / metric --- */ \
-".row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--row-border)}" \
+".row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--row-border)}" \
 ".row:last-child{border-bottom:none}" \
-".lbl{color:var(--muted);font-weight:bold}" \
-".val{color:var(--text)}" \
+".lbl{color:var(--muted);font-weight:bold;flex:0 0 auto}" \
+".val{color:var(--text);flex:1 1 auto;min-width:0;text-align:right;overflow-wrap:anywhere;word-break:break-word}" \
 /* --- Tables --- */ \
 "table{width:100%;border-collapse:collapse;margin-top:6px}" \
 "th{color:var(--muted);text-align:left;padding:8px 6px;border-bottom:2px solid var(--border);font-weight:bold;white-space:nowrap}" \
@@ -81,7 +82,7 @@
 ".empty{color:var(--muted);font-size:0.9em;padding:10px 0}" \
 ".console-out{font-family:monospace;background:#111;color:#3fb950;height:220px;overflow-y:auto;white-space:pre-wrap;border-radius:4px;padding:10px;border:1px solid #333;font-size:13px}" \
 /* --- Responsive --- */ \
-"@media(max-width:600px){.grid{grid-template-columns:1fr}}" \
+"@media(max-width:600px){.navbar{padding:0 12px}.container{padding:0 10px}.grid{grid-template-columns:1fr}}" \
 "</style>" \
 /* Theme init: apply saved theme before first paint (avoids flash) */ \
 "<script>(function(){var t=localStorage.getItem('theme')||'dark';document.documentElement.setAttribute('data-theme',t);})();</script>"
