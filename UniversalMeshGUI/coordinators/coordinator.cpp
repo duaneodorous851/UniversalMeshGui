@@ -36,6 +36,8 @@ static WiFiClient    _mqttNetClient;
 static PubSubClient  _mqtt(_mqttNetClient);
 static unsigned long _mqttLastAttempt = 0;
 constexpr unsigned long MQTT_RECONNECT_MS = 5000;
+static unsigned long _mqttLastCoordPub = 0;
+constexpr unsigned long MQTT_COORD_PUB_MS = 30000;
 
 // Publish queue — enqueued from ESP-NOW callback task, drained in loop()
 #define MQTT_QUEUE_SIZE 8
@@ -240,6 +242,38 @@ static void mqttDrain() {
   }
 }
 
+// Publish coordinator runtime telemetry so MQTT consumers can monitor the bridge itself,
+// not only data forwarded from mesh nodes.
+static void mqttPublishCoordinatorData(bool force = false) {
+  if (!_mqtt.connected()) return;
+  unsigned long now = millis();
+  if (!force && (now - _mqttLastCoordPub < MQTT_COORD_PUB_MS)) return;
+
+  char topic[96];
+  char payload[220];
+  bool ethOk = isEthConnected();
+  bool wifiOk = WiFi.status() == WL_CONNECTED;
+  String ip = ethOk ? ETH.localIP().toString() : WiFi.localIP().toString();
+  int rssi = wifiOk ? WiFi.RSSI() : 0;
+
+  snprintf(topic, sizeof(topic), "%s/%s/coordinator/status", MESH_NETWORK, MESH_HOSTNAME);
+  snprintf(payload, sizeof(payload),
+           "{\"name\":\"%s\",\"uptime_s\":%lu,\"heap\":%u,\"mesh_ch\":%u,\"wifi_connected\":%s,\"eth_connected\":%s,\"rssi\":%d,\"ip\":\"%s\"}",
+           MESH_HOSTNAME,
+           now / 1000UL,
+           ESP.getFreeHeap(),
+           getMeshChannel(),
+           wifiOk ? "true" : "false",
+           ethOk ? "true" : "false",
+           rssi,
+           ip.c_str());
+
+  if (_mqtt.publish(topic, payload, true)) {
+    _mqttLastCoordPub = now;
+    Serial.printf("[MQTT] %s -> %s\n", topic, payload);
+  }
+}
+
 static void mqttConnect() {
   if (!isEthConnected()) return;
   if (_mqtt.connected()) return;
@@ -252,6 +286,7 @@ static void mqttConnect() {
   const char* pass = strlen(MQTT_PASS) ? MQTT_PASS : nullptr;
   if (_mqtt.connect(clientId.c_str(), user, pass)) {
     Serial.println(" OK");
+    mqttPublishCoordinatorData(true);
   } else {
     Serial.printf(" failed rc=%d\n", _mqtt.state());
   }
@@ -524,6 +559,7 @@ void loop() {
   mqttConnect();
   _mqtt.loop();
   mqttDrain();
+  mqttPublishCoordinatorData();
 #endif
   // Let the mesh library do its background work (keep PD8JO happy)
   mesh.update();
