@@ -41,7 +41,7 @@
 
 ### GUI / Firmware (this project)
 - **Ready-to-Flash Firmware:** Pre-built coordinator and sensor node firmware for a range of ESP32 and ESP8266 boards — no library integration needed.
-- **Remote Commands:** Send `cmd:reboot`, `cmd:info`, `cmd:info:long` from the dashboard to any node; node replies with ACK and data.
+- **Remote Commands:** Send `cmd:reboot`, `cmd:info`, `cmd:info:long`, `cmd:update` from the dashboard to any node; node replies with ACK and command-specific behavior.
 - **Hybrid Coordinator:** Bridge your mesh to the internet via Wi-Fi or Ethernet.
 - **Node Announce:** Sensors broadcast their name on boot and heartbeat; coordinator stores and displays it.
 - **MQTT Bridge:** Coordinator automatically forwards mesh data to an MQTT broker (ETH Elite).
@@ -249,6 +249,35 @@ Single JSON reply (fits in one packet with the 200-byte payload limit):
 
 In the current node firmware, `cmd:info` and `cmd:info:long` are handled the same way and return the same single JSON payload.
 
+### `cmd:update`
+
+Starts node OTA mode over Wi-Fi.
+
+Behavior:
+
+1. Node sends ACK: `command received:update`
+2. OTA request is deferred to the main loop (not executed in the ESP-NOW receive callback)
+3. Node stops mesh traffic (`esp_now_deinit()`)
+4. Node switches to Wi-Fi station mode and joins `OTA_SSID` / `OTA_PASSWORD`
+5. If Wi-Fi connects, node starts ArduinoOTA and waits for upload
+6. If Wi-Fi fails, node reboots and resumes normal mesh firmware
+
+Expected node serial output:
+
+```
+[CMD] OTA requested
+[OTA] Stopping mesh...
+[OTA] Joining SSID: <your-ssid>
+[OTA] Connecting to WiFi...
+[OTA] IP: <node-ip>
+[OTA] Ready - open PlatformIO OTA upload or arduino-cli to flash
+```
+
+Requirements:
+
+- Build must define `OTA_SSID` and `OTA_PASSWORD` (provided via the `node_ota` build flags in `platformio.ini`)
+- Command is currently sent via free-text input (`cmd:update`) in the dashboard Send Message panel
+
 Replies appear in the packet log and are forwarded to MQTT on ETH Elite builds.
 
 ---
@@ -266,7 +295,7 @@ The coordinator serves a responsive single-page dashboard on port 80.
 | **Ethernet** | Status, IP, subnet, gateway, DNS, MAC, link speed/duplex *(ETH Elite only)* |
 | **Mesh Nodes** | Live list of known nodes — MAC, last-seen counter, resolved name. Coordinator always pinned at top. Click **Node** or **Last Seen** column header to sort. Green dot = seen <120 s, red = stale |
 | **Mesh Channel** | Dropdown to switch ESP-NOW channel (1–13), persisted to NVS *(ETH Elite only)* |
-| **Send Message** | Inject a text packet to any node or broadcast directly from the browser. Includes command presets (`cmd:info`, `cmd:info:long`, `cmd:reboot`) plus free-text mode |
+| **Send Message** | Inject a text packet to any node or broadcast directly from the browser. Includes command presets (`cmd:info`, `cmd:info:long`, `cmd:reboot`) plus free-text mode (for example `cmd:update`) |
 | **Packet Log** | Paginated live log (200 entries with PSRAM, 10 without). Shows type, sender, app ID, payload, timestamp. Relayed packets highlighted |
 | **Topology Map** | Force-directed canvas graph of all nodes and relay paths, inferred from packet headers. Click a node for details. Controls: Freeze/Resume physics, Reset layout, toggle MAC labels, toggle edge age labels, drag to pin a node, double-click to unpin, pan by dragging background, export as PNG |
 | **Serial Console** | Live stream of the coordinator's internal log — like a web-based serial monitor |
