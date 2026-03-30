@@ -91,6 +91,12 @@ void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
     Serial.println("[CMD] Reboot requested, restarting...");
     delay(100);
     ESP.restart();
+  } else if (strcmp(command, "update") == 0) {
+    Serial.println("[CMD] Update requested, rebooting...");
+    delay(100);
+    //ESP.restart();
+    
+
   }
 }
 
