@@ -201,7 +201,11 @@ R"rawliteral(
       <div id="msg-status" style="margin-top:6px;font-size:0.85em;color:var(--sub);text-align:center"></div>
     </div>
   <div class="card" style="grid-column:1/-1">
-    <h2>Live Packet Log <span id="log-pageinfo" style="float:right;font-size:0.8em;color:var(--sub)"></span></h2>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <h2 style="margin-bottom:0">Live Packet Log</h2>
+      <select id="log-filter" class="sel" style="margin-left:auto" onchange="logPage_=0;renderLog()"><option value="">All nodes</option></select>
+      <span id="log-pageinfo" style="font-size:0.8em;color:var(--sub)"></span>
+    </div>
     <div id="log-empty" class="empty">No packets yet</div>
     <div style="overflow-x:auto">
     <table id="log-table" style="display:none;min-width:480px">
@@ -332,6 +336,18 @@ R"rawliteral(
         destSel.appendChild(opt);
       });
       if([...destSel.options].some(o=>o.value===prevDest)) destSel.value=prevDest;
+      const logSel=document.getElementById('log-filter');
+      if(!logSel) return;
+      const prevLog=logSel.value;
+      logSel.innerHTML='<option value="">All nodes</option>';
+      if(nodes) nodes.filter(n=>n.mac.toUpperCase()!==coordMac_).forEach(n=>{
+        const opt=document.createElement('option');
+        opt.value=n.mac.toUpperCase();
+        opt.textContent=(n.name||n.mac)+(n.name?' \u2014 '+n.mac:'');
+        logSel.appendChild(opt);
+      });
+      if(coordMac_){const opt=document.createElement('option');opt.value=coordMac_;opt.textContent='[coordinator] \u2014 '+coordMac_;logSel.appendChild(opt);}
+      if([...logSel.options].some(o=>o.value===prevLog)) logSel.value=prevLog;
     }
 
     function sortNodes(col){
@@ -364,14 +380,20 @@ R"rawliteral(
         nb.innerHTML+='<tr><td>'+dot+node+'</td><td style="text-align:right;white-space:nowrap">'+n.last_seen_seconds_ago+'s ago</td></tr>';
       });
     }
+    function filteredLog(){
+      const mac=((document.getElementById('log-filter')||{}).value||'').toUpperCase();
+      return mac?logPackets_.filter(p=>(p.origSrc||p.src||'').toUpperCase()===mac||p.src.toUpperCase()===mac):logPackets_;
+    }
     function logPage(dir){
-      logPage_=Math.max(0,Math.min(logPage_+dir,Math.ceil(logPackets_.length/PAGE_SIZE)-1));
+      const fl=filteredLog();
+      logPage_=Math.max(0,Math.min(logPage_+dir,Math.ceil(fl.length/PAGE_SIZE)-1));
       renderLog();
     }
     function renderLog(){
       const lb=document.getElementById('log-body');
       lb.innerHTML='';
-      if(!logPackets_.length){
+      const logPackets=filteredLog();
+      if(!logPackets.length){
         document.getElementById('log-empty').style.display='';
         document.getElementById('log-table').style.display='none';
         document.getElementById('log-pageinfo').textContent='';
@@ -379,8 +401,8 @@ R"rawliteral(
         document.getElementById('log-next').style.visibility='hidden';
         return;
       }
-      const total=Math.ceil(logPackets_.length/PAGE_SIZE);
-      const page=logPackets_.slice(logPage_*PAGE_SIZE,(logPage_+1)*PAGE_SIZE);
+      const total=Math.ceil(logPackets.length/PAGE_SIZE);
+      const page=logPackets.slice(logPage_*PAGE_SIZE,(logPage_+1)*PAGE_SIZE);
       document.getElementById('log-empty').style.display='none';
       document.getElementById('log-table').style.display='';
       document.getElementById('log-pageinfo').textContent=(logPage_+1)+' / '+total;
