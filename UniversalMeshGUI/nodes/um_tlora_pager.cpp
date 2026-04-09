@@ -504,7 +504,9 @@ static void um_build_mesh_ui(void)
     lv_obj_set_style_border_width(exit_btn, 0, LV_PART_MAIN);
     lv_obj_set_style_shadow_width(exit_btn, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(exit_btn, 2, LV_PART_MAIN);
-    lv_obj_add_event_cb(exit_btn, [](lv_event_t *e) { esp_restart(); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(exit_btn, [](lv_event_t *e) {
+        instance.sleep((WakeupSource_t)(WAKEUP_SRC_BOOT_BUTTON | WAKEUP_SRC_ROTARY_BUTTON));
+    }, LV_EVENT_CLICKED, NULL);
     lv_obj_t *exit_lbl = lv_label_create(exit_btn);
     lv_label_set_text(exit_lbl, LV_SYMBOL_POWER);
     lv_obj_set_style_text_color(exit_lbl, lv_color_make(200, 60, 60), LV_PART_MAIN);
