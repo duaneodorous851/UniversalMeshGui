@@ -1,19 +1,16 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#if defined(ESP32)
-  #include <esp_wifi.h>
-#endif
-#ifdef HAS_RGB_LED
-  #include <Adafruit_NeoPixel.h>
-#endif
+#include <esp_wifi.h>
+#include <LilyGoLib.h>
+#include <LV_Helper.h>
 #include "UniversalMesh.h"
 #include "ota_update.h"
 
 #ifndef NODE_NAME
   #define NODE_NAME "sensor-node"
 #endif
-#define HEARTBEAT_INTERVAL  60000
-#define TEMP_INTERVAL       30000
+#define HEARTBEAT_INTERVAL  120000
+#define TEMP_INTERVAL       120000
 
 UniversalMesh mesh;
 uint8_t myMac[6]          = {0};
@@ -23,92 +20,47 @@ unsigned long lastHeartbeat = 0;
 unsigned long lastTemp      = 0;
 volatile bool otaRequested  = false;
 
-#ifdef HAS_RGB_LED
-constexpr uint8_t LED_PIN = 8;
-Adafruit_NeoPixel rgbLed(1, LED_PIN, NEO_GRB + NEO_KHZ800);
+static lv_obj_t* lblStatus = nullptr;
+static lv_obj_t* lblChannel = nullptr;
 
-struct RGB {
-  uint8_t r;
-  uint8_t g;
-  uint8_t b;
-};
+static void displayInit() {
+  instance.begin();
+  beginLvglHelper(instance);
+  instance.setBrightness(DEVICE_MAX_BRIGHTNESS_LEVEL);
 
-constexpr RGB COLOR_OFF   = {0, 0, 0};
-constexpr RGB COLOR_GREEN = {0, 255, 0};
-constexpr RGB COLOR_RED   = {255, 0, 0};
-constexpr RGB COLOR_BLUE  = {0, 0, 255};
-constexpr RGB COLOR_AMBER = {255, 120, 0};
+  lv_obj_t* screen = lv_screen_active();
 
-enum LedState { LED_CONNECTING, LED_CONNECTED, LED_NO_COORDINATOR, LED_TX_BLINK, LED_RX_BLINK };
-LedState ledState = LED_CONNECTING;
-LedState ledPrevState = LED_CONNECTING;
-unsigned long ledTimer = 0;
-bool ledToggle = false;
-int8_t ledFlashRemaining = 0;
+  lv_obj_t* lblTitle = lv_label_create(screen);
+  lv_label_set_text(lblTitle, "UniversalMesh");
+  lv_obj_align(lblTitle, LV_ALIGN_TOP_MID, 0, 8);
 
-constexpr unsigned long BLINK_INTERVAL = 300;
-constexpr unsigned long FLASH_ON = 120;
-constexpr unsigned long FLASH_OFF = 120;
-constexpr uint8_t FLASH_COUNT = 2;
+  lv_obj_t* lblNode = lv_label_create(screen);
+  lv_label_set_text(lblNode, NODE_NAME);
+  lv_obj_align_to(lblNode, lblTitle, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
 
-void setColor(const RGB& c, uint8_t brightness = 10) {
-  uint16_t scale = (uint16_t)brightness * 255 / 100;
-  rgbLed.setPixelColor(0, rgbLed.Color((c.r * scale) / 255, (c.g * scale) / 255, (c.b * scale) / 255));
-  rgbLed.show();
+  lblStatus = lv_label_create(screen);
+  lv_label_set_text(lblStatus, "Scanning...");
+  lv_obj_center(lblStatus);
+
+  lblChannel = lv_label_create(screen);
+  lv_label_set_text(lblChannel, "");
+  lv_obj_align_to(lblChannel, lblStatus, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
 }
 
-void setSteadyState(LedState steadyState) {
-  ledState = steadyState;
-  ledPrevState = steadyState;
-  if (steadyState == LED_CONNECTED) {
-    setColor(COLOR_GREEN);
-  } else if (steadyState == LED_NO_COORDINATOR) {
-    setColor(COLOR_RED);
-  } else {
-    setColor(COLOR_OFF);
-  }
+static void displaySetConnected(uint8_t channel, const uint8_t* mac) {
+  if (!lblStatus) return;
+  lv_label_set_text(lblStatus, "Connected");
+  char buf[32];
+  snprintf(buf, sizeof(buf), "CH:%d  %02X:%02X:%02X:%02X:%02X:%02X",
+           channel, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  lv_label_set_text(lblChannel, buf);
 }
 
-void ledFlash(LedState flashState) {
-  if (ledState == LED_TX_BLINK || ledState == LED_RX_BLINK) return;
-  ledPrevState = ledState;
-  ledState = flashState;
-  ledFlashRemaining = FLASH_COUNT;
-  ledToggle = true;
-  ledTimer = millis();
-  setColor(flashState == LED_TX_BLINK ? COLOR_BLUE : COLOR_AMBER);
+static void displaySetScanning() {
+  if (!lblStatus) return;
+  lv_label_set_text(lblStatus, "Scanning...");
+  lv_label_set_text(lblChannel, "");
 }
-
-void ledUpdate() {
-  unsigned long now = millis();
-  if (ledState == LED_CONNECTING) {
-    if (now - ledTimer >= BLINK_INTERVAL) {
-      ledToggle = !ledToggle;
-      setColor(ledToggle ? COLOR_BLUE : COLOR_OFF);
-      ledTimer = now;
-    }
-    return;
-  }
-
-  if (ledState == LED_TX_BLINK || ledState == LED_RX_BLINK) {
-    unsigned long phase = ledToggle ? FLASH_ON : FLASH_OFF;
-    if (now - ledTimer >= phase) {
-      ledToggle = !ledToggle;
-      if (ledToggle) {
-        ledFlashRemaining--;
-        if (ledFlashRemaining <= 0) {
-          setSteadyState(ledPrevState);
-          return;
-        }
-        setColor(ledState == LED_TX_BLINK ? COLOR_BLUE : COLOR_AMBER);
-      } else {
-        setColor(COLOR_OFF);
-      }
-      ledTimer = now;
-    }
-  }
-}
-#endif
 
 // Send all node info as a single JSON (new 200-byte payload fits everything)
 static void sendInfo(uint8_t* destMac, uint8_t appId) {
@@ -122,22 +74,14 @@ static void sendInfo(uint8_t* destMac, uint8_t appId) {
   doc["heap"] = ESP.getFreeHeap();
   doc["rssi"] = WiFi.RSSI();
   doc["ch"]   = meshChannel;
-  #if defined(ESP32)
-    doc["chip"] = ESP.getChipModel();
-    doc["rev"]  = (int)ESP.getChipRevision();
-  #else
-    doc["chip"] = "ESP8266";
-  #endif
+  doc["chip"] = ESP.getChipModel();
+  doc["rev"]  = (int)ESP.getChipRevision();
   String out;
   serializeJson(doc, out);
   mesh.send(destMac, MESH_TYPE_DATA, appId, out);
 }
 
 void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
-#ifdef HAS_RGB_LED
-  ledFlash(LED_RX_BLINK);
-#endif
-
   bool directToMe = (memcmp(packet->destMac, myMac, 6) == 0);
   if (packet->type != MESH_TYPE_DATA || !directToMe) return;
 
@@ -181,9 +125,6 @@ void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
 static bool connectToCoordinator() {
   meshChannel = mesh.findCoordinatorChannel(NODE_NAME);
   if (meshChannel == 0) {
-#ifdef HAS_RGB_LED
-    setSteadyState(LED_NO_COORDINATOR);
-#endif
     return false;
   }
 
@@ -192,11 +133,7 @@ static bool connectToCoordinator() {
   mesh.setCoordinatorMac(coordinatorMac);
   mesh.onReceive(onMeshMessage);
 
-  #if defined(ESP32)
-    esp_wifi_get_mac(WIFI_IF_STA, myMac);
-  #else
-    WiFi.macAddress(myMac);
-  #endif
+  esp_wifi_get_mac(WIFI_IF_STA, myMac);
 
   lastHeartbeat = millis() - HEARTBEAT_INTERVAL;
   lastTemp      = millis() - TEMP_INTERVAL;
@@ -204,24 +141,15 @@ static bool connectToCoordinator() {
   // Announce presence — PING triggers library PONG reply; DATA 0x06 registers name
   mesh.send(coordinatorMac, MESH_TYPE_PING, 0x00, (const uint8_t*)NODE_NAME, strlen(NODE_NAME), 4);
   mesh.send(coordinatorMac, MESH_TYPE_DATA, 0x06, (const uint8_t*)NODE_NAME, strlen(NODE_NAME), 4);
-#ifdef HAS_RGB_LED
-  setSteadyState(LED_CONNECTED);
-#endif
+  displaySetConnected(meshChannel, myMac);
   return true;
 }
 
 void setup() {
   Serial.begin(115200);
+  displayInit();
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
-
-#ifdef HAS_RGB_LED
-  rgbLed.begin();
-  rgbLed.show();
-  ledTimer = millis();
-  ledState = LED_CONNECTING;
-  ledPrevState = LED_CONNECTING;
-#endif
 
   Serial.println();
   Serial.println("========================================");
@@ -239,11 +167,6 @@ void setup() {
     Serial.println("  Coordinator : Found");
   } else {
     Serial.println("  Coordinator : Not found, retrying in loop...");
-#ifdef HAS_RGB_LED
-    ledState = LED_CONNECTING;
-    ledPrevState = LED_CONNECTING;
-    ledTimer = millis();
-#endif
   }
   Serial.println("========================================");
 }
@@ -259,19 +182,11 @@ void loop() {
     return;
   }
 
+  lv_timer_handler();
   mesh.update();
 
   if (!mesh.isCoordinatorFound()) {
-#ifdef HAS_RGB_LED
-    if (ledState == LED_CONNECTED || ledState == LED_NO_COORDINATOR) {
-      ledState = LED_CONNECTING;
-      ledPrevState = LED_CONNECTING;
-      ledTimer = millis();
-      ledToggle = false;
-    }
-    ledUpdate();
-#endif
-
+    displaySetScanning();
     static unsigned long lastRetry = 0;
     if (millis() - lastRetry > 30000) {
       lastRetry = millis();
@@ -290,36 +205,22 @@ void loop() {
     uint8_t hb = 0x01;
     mesh.send(coordinatorMac, MESH_TYPE_DATA, 0x05, &hb, 1, 4);
     mesh.send(coordinatorMac, MESH_TYPE_DATA, 0x06, (const uint8_t*)NODE_NAME, strlen(NODE_NAME), 4);
-#ifdef HAS_RGB_LED
-    ledFlash(LED_TX_BLINK);
-#endif
     Serial.printf("[TX] Heartbeat | %02X:%02X:%02X:%02X:%02X:%02X\n",
                   myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5]);
   }
 
   if (now - lastTemp >= TEMP_INTERVAL) {
     lastTemp = now;
-    #if defined(ESP8266)
-    float tempC = 18.0f + (rand() % 100) / 10.0f;
-    #else
     float tempC = temperatureRead();
-    #endif
     JsonDocument doc;
     doc["name"] = NODE_NAME;
     doc["temp"] = serialized(String(tempC, 1));
     String payload;
     serializeJson(doc, payload);
     if (mesh.sendToCoordinator(0x01, payload)) {
-#ifdef HAS_RGB_LED
-      ledFlash(LED_TX_BLINK);
-#endif
       Serial.printf("[TX] Sensor: %s\n", payload.c_str());
     } else {
       Serial.println("[TX] Send failed");
     }
   }
-
-#ifdef HAS_RGB_LED
-  ledUpdate();
-#endif
 }
