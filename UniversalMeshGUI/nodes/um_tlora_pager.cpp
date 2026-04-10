@@ -617,7 +617,7 @@ void setup()
 {
     Serial.begin(115200);
 
-    instance.begin();
+    instance.begin(NO_INIT_FATFS);
     beginLvglHelper(instance);
 
     // Workaround: LV_Helper_v9 creates the default group AFTER
