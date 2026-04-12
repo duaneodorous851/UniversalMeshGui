@@ -276,24 +276,44 @@ void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
   unlockMeshData();
 
   // 2. Process the packet types
-  if (packet->type == MESH_TYPE_PING && packet->payloadLen > 0) {
-    // Node announced itself with its name in the PING payload (new library discovery)
-    char name[201] = {0};
-    uint8_t len = packet->payloadLen < 200 ? packet->payloadLen : 200;
-    memcpy(name, packet->payload, len);
-    lockMeshData();
-    for (int i = 0; i < MAX_NODES; i++) {
-      if (meshNodes[i].active && memcmp(meshNodes[i].mac, packet->srcMac, 6) == 0) {
-        strncpy(meshNodes[i].name, name, sizeof(meshNodes[i].name) - 1);
-        meshNodes[i].name[sizeof(meshNodes[i].name) - 1] = '\0';
-        break;
+  if (packet->type == MESH_TYPE_PING) {
+    // Store the node name if the PING carries one (new library discovery payload)
+    if (packet->payloadLen > 0) {
+      char name[201] = {0};
+      uint8_t len = packet->payloadLen < 200 ? packet->payloadLen : 200;
+      memcpy(name, packet->payload, len);
+      lockMeshData();
+      for (int i = 0; i < MAX_NODES; i++) {
+        if (meshNodes[i].active && memcmp(meshNodes[i].mac, packet->srcMac, 6) == 0) {
+          strncpy(meshNodes[i].name, name, sizeof(meshNodes[i].name) - 1);
+          meshNodes[i].name[sizeof(meshNodes[i].name) - 1] = '\0';
+          break;
+        }
       }
+      unlockMeshData();
+      char logMsg[80];
+      snprintf(logMsg, sizeof(logMsg), "[DISCOVERY] Node joined: %s", name);
+      Serial.println(logMsg);
+      addSerialLog(logMsg);
     }
-    unlockMeshData();
-    char logMsg[80];
-    snprintf(logMsg, sizeof(logMsg), "[DISCOVERY] Node joined: %s", name);
-    Serial.println(logMsg);
-    addSerialLog(logMsg);
+#ifdef HAS_LORA
+    // The mesh library auto-sends a PONG over ESP-NOW; mirror that over LoRa
+    // so LoRa-only nodes (e.g. um-pager) also get a coordinator response.
+    {
+      MeshPacket pong = {};
+      pong.type       = MESH_TYPE_PONG;
+      pong.ttl        = packet->ttl;
+      pong.msgId      = (uint32_t)(millis() ^ esp_random());
+      memcpy(pong.destMac, packet->srcMac, 6);
+      esp_wifi_get_mac(WIFI_IF_STA, pong.srcMac);
+      pong.appId      = 0xFF;   // coordinator role — matches what the library sends
+      pong.payloadLen = 0;
+      loraSendPacket(&pong);
+      Serial.printf("[LORA] PONG → %02X:%02X:%02X:%02X:%02X:%02X\n",
+                    pong.destMac[0], pong.destMac[1], pong.destMac[2],
+                    pong.destMac[3], pong.destMac[4], pong.destMac[5]);
+    }
+#endif
   }
   else if (packet->type == MESH_TYPE_PONG) {
     char logMsg[80];
