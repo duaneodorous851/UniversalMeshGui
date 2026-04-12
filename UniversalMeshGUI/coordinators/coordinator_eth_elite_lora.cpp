@@ -27,6 +27,14 @@ extern String getEthDNS();
 extern bool   isNtpSynced();
 extern String getNtpTimeStr();
 
+// --- LoRa bridge (lora.cpp) — compiled in only when -D HAS_LORA is set ---
+#ifdef HAS_LORA
+extern void setupLoRa();
+extern void loopLoRa();
+extern bool loraSendPacket(MeshPacket* pkt);
+extern void loraOnReceive(MeshReceiveCallback cb);
+#endif
+
 // --- MQTT client ---
 static WiFiClient    _mqttNetClient;
 static PubSubClient  _mqtt(_mqttNetClient);
@@ -74,37 +82,80 @@ void setMeshChannel(uint8_t ch) {
 
 // --- ROUTING TABLE ---
 #define MAX_NODES 20
+
+enum Transport : uint8_t { TRANSPORT_ESPNOW, TRANSPORT_LORA_868, TRANSPORT_LORA_2400 };
+
 struct KnownNode {
   uint8_t       mac[6];
   unsigned long lastSeen;
   bool          active;
   char          name[32];
+  Transport     transport;   // which radio this node was last heard on
+  float         loraRssi;    // last LoRa RSSI in dBm (0 for ESP-NOW nodes)
+  float         loraSNR;     // last LoRa SNR in dB   (0 for ESP-NOW nodes)
 };
 KnownNode meshNodes[MAX_NODES];
 
-// Function to register or update a node in the table
+// Register or refresh a node seen via ESP-NOW
 void updateNodeTable(uint8_t* mac) {
-  // Check if we already know this node
   for (int i = 0; i < MAX_NODES; i++) {
     if (meshNodes[i].active && memcmp(meshNodes[i].mac, mac, 6) == 0) {
-      meshNodes[i].lastSeen = millis(); // Update timestamp
+      meshNodes[i].lastSeen  = millis();
+      meshNodes[i].transport = TRANSPORT_ESPNOW;
       return;
     }
   }
-  // If new, find an empty slot and add it
   for (int i = 0; i < MAX_NODES; i++) {
     if (!meshNodes[i].active) {
       memcpy(meshNodes[i].mac, mac, 6);
-      meshNodes[i].lastSeen = millis();
-      meshNodes[i].active = true;
+      meshNodes[i].lastSeen  = millis();
+      meshNodes[i].active    = true;
+      meshNodes[i].transport = TRANSPORT_ESPNOW;
+      meshNodes[i].loraRssi  = 0.0f;
+      meshNodes[i].loraSNR   = 0.0f;
       char discMsg[80];
-      snprintf(discMsg, sizeof(discMsg), "[ROUTING] New node: %02X:%02X:%02X:%02X:%02X:%02X",
+      snprintf(discMsg, sizeof(discMsg), "[ROUTING] New node (ESP-NOW): %02X:%02X:%02X:%02X:%02X:%02X",
                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
       Serial.println(discMsg);
       addSerialLog(discMsg);
       return;
     }
   }
+}
+
+// Called from lora.cpp after a packet arrives — updates transport + signal stats.
+// Must be called from loop() context (not ISR); lora.cpp guarantees this.
+void updateNodeLoRa(uint8_t* mac, float rssi, float snr) {
+  lockMeshData();
+  for (int i = 0; i < MAX_NODES; i++) {
+    if (meshNodes[i].active && memcmp(meshNodes[i].mac, mac, 6) == 0) {
+      meshNodes[i].transport = TRANSPORT_LORA_868;
+      meshNodes[i].loraRssi  = rssi;
+      meshNodes[i].loraSNR   = snr;
+      meshNodes[i].lastSeen  = millis();
+      unlockMeshData();
+      return;
+    }
+  }
+  // Node not yet in table — add it as a LoRa node
+  for (int i = 0; i < MAX_NODES; i++) {
+    if (!meshNodes[i].active) {
+      memcpy(meshNodes[i].mac, mac, 6);
+      meshNodes[i].lastSeen  = millis();
+      meshNodes[i].active    = true;
+      meshNodes[i].transport = TRANSPORT_LORA_868;
+      meshNodes[i].loraRssi  = rssi;
+      meshNodes[i].loraSNR   = snr;
+      meshNodes[i].name[0]   = '\0';
+      char discMsg[80];
+      snprintf(discMsg, sizeof(discMsg), "[ROUTING] New node (LoRa): %02X:%02X:%02X:%02X:%02X:%02X",
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      Serial.println(discMsg);
+      addSerialLog(discMsg);
+      break;
+    }
+  }
+  unlockMeshData();
 }
 
 
@@ -363,6 +414,13 @@ void setup() {
     addSerialLog("[ERROR] Mesh init failed!");
   }
 
+#ifdef HAS_LORA
+  // 2b. Initialize LoRa radio and wire its receive path into onMeshMessage
+  loraOnReceive(onMeshMessage);
+  setupLoRa();
+  addSerialLog("[LORA] LR1121 bridge active (868 MHz SF12)");
+#endif
+
   // 3. Setup REST API Endpoint for Injecting Packets
   server.on("/api/tx", HTTP_POST,
     [](AsyncWebServerRequest *request) {},
@@ -394,6 +452,19 @@ void setup() {
       }
 
       mesh.send(destMac, MESH_TYPE_DATA, appId, payloadBytes, payloadLen, ttl);
+#ifdef HAS_LORA
+      // Also broadcast over LoRa so LoRa-only nodes receive coordinator messages
+      MeshPacket loraPkt = {};
+      loraPkt.type       = MESH_TYPE_DATA;
+      loraPkt.ttl        = ttl;
+      loraPkt.msgId      = (uint32_t)(millis() ^ (esp_random() & 0xFFFF));
+      memcpy(loraPkt.destMac, destMac, 6);
+      esp_wifi_get_mac(WIFI_IF_STA, loraPkt.srcMac);
+      loraPkt.appId      = appId;
+      loraPkt.payloadLen = payloadLen;
+      memcpy(loraPkt.payload, payloadBytes, payloadLen);
+      loraSendPacket(&loraPkt);
+#endif
       request->send(200, "application/json", "{\"status\":\"data_sent\"}");
     }
   );
@@ -402,6 +473,18 @@ void setup() {
   server.on("/api/discover", HTTP_GET, [](AsyncWebServerRequest *request) {
     uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     mesh.send(broadcastMac, MESH_TYPE_PING, 0x00, nullptr, 0, 4);
+#ifdef HAS_LORA
+    // Ping over LoRa too so LoRa-only nodes can announce themselves
+    MeshPacket pingPkt = {};
+    pingPkt.type   = MESH_TYPE_PING;
+    pingPkt.ttl    = 4;
+    pingPkt.msgId  = (uint32_t)(millis() ^ (esp_random() & 0xFFFF));
+    memset(pingPkt.destMac, 0xFF, 6);
+    esp_wifi_get_mac(WIFI_IF_STA, pingPkt.srcMac);
+    pingPkt.appId      = 0x00;
+    pingPkt.payloadLen = 0;
+    loraSendPacket(&pingPkt);
+#endif
     request->send(200, "application/json", "{\"status\":\"discovery_initiated\"}");
   });
 
@@ -425,6 +508,12 @@ void setup() {
         nodeObj["mac"] = macStr;
         nodeObj["last_seen_seconds_ago"] = (now - snap[i].lastSeen) / 1000;
         if (snap[i].name[0]) nodeObj["name"] = snap[i].name;
+        nodeObj["transport"] = snap[i].transport == TRANSPORT_LORA_868  ? "lora_868"  :
+                               snap[i].transport == TRANSPORT_LORA_2400 ? "lora_2400" : "espnow";
+        if (snap[i].transport == TRANSPORT_LORA_868 || snap[i].transport == TRANSPORT_LORA_2400) {
+          nodeObj["rssi_dbm"] = serialized(String(snap[i].loraRssi, 1));
+          nodeObj["snr_db"]   = serialized(String(snap[i].loraSNR,  1));
+        }
       }
     }
 
@@ -432,6 +521,35 @@ void setup() {
     serializeJson(doc, response);
     request->send(200, "application/json", response);
   });
+
+#ifdef HAS_LORA
+  // LoRa direct TX — broadcasts a text message over LoRa as a MeshPacket
+  server.on("/api/lora/tx", HTTP_POST,
+    [](AsyncWebServerRequest *request) {},
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      JsonDocument doc;
+      deserializeJson(doc, data, len);
+      const char* text = doc["payload"] | "";
+      uint8_t textLen = (uint8_t)strnlen(text, 190);
+
+      MeshPacket pkt = {};
+      pkt.type       = MESH_TYPE_DATA;
+      pkt.ttl        = 3;
+      pkt.msgId      = (uint32_t)(millis() ^ (esp_random() & 0xFFFF));
+      memset(pkt.destMac, 0xFF, 6);
+      esp_wifi_get_mac(WIFI_IF_STA, pkt.srcMac);
+      pkt.appId      = 0x01;
+      pkt.payloadLen = textLen;
+      memcpy(pkt.payload, text, textLen);
+
+      bool ok = loraSendPacket(&pkt);
+      char resp[48];
+      snprintf(resp, sizeof(resp), "{\"status\":\"%s\"}", ok ? "queued" : "queue_full");
+      request->send(200, "application/json", resp);
+    }
+  );
+#endif
 
   initWebDashboard(server);
   server.begin();
@@ -441,11 +559,14 @@ void setup() {
 
 void loop() {
   loopETH();
+#ifdef HAS_LORA
+  loopLoRa();
+#endif
   mqttConnect();
   _mqtt.loop();
   mqttDrain();
   mqttPublishCoordinatorData();
-  // Let the mesh library do its background work (keep PD8JO happy)
+  // Let the mesh library do its background work
   mesh.update();
 
   // Temporary USB Serial Bypass for testing

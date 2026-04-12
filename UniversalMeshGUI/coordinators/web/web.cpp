@@ -152,8 +152,8 @@ R"rawliteral(
       </div>
       <div id="nodes-empty" class="empty">No nodes discovered yet</div>
       <table id="nodes-table" style="display:none;table-layout:fixed;width:100%">
-        <colgroup><col style="width:auto"><col style="width:100px"></colgroup>
-        <thead><tr><th onclick="sortNodes('name')" style="cursor:pointer;user-select:none">Node <span id="sort-node-icon"></span></th><th onclick="sortNodes('seen')" style="cursor:pointer;user-select:none;text-align:right">Last Seen <span id="sort-seen-icon">&#9650;</span></th></tr></thead>
+        <colgroup><col style="width:auto"><col style="width:90px"><col style="width:90px"></colgroup>
+        <thead><tr><th onclick="sortNodes('name')" style="cursor:pointer;user-select:none">Node <span id="sort-node-icon"></span></th><th>Radio</th><th onclick="sortNodes('seen')" style="cursor:pointer;user-select:none;text-align:right">Last Seen <span id="sort-seen-icon">&#9650;</span></th></tr></thead>
         <tbody id="nodes-body"></tbody>
       </table>
     </div>
@@ -199,6 +199,17 @@ R"rawliteral(
         <button id="msg-send-btn" onclick="sendMsg()" class="btn btn-primary">Send (App&nbsp;0x01)</button>
       </div>
       <div id="msg-status" style="margin-top:6px;font-size:0.85em;color:var(--sub);text-align:center"></div>
+    </div>
+    <div class="card" id="lora-card" style="display:none">
+      <h2>Send via LoRa</h2>
+      <div class="row" style="margin-bottom:8px">
+        <span class="lbl">Text</span>
+        <input id="lora-text" class="sel" style="flex:1;min-width:0" placeholder="Hello LoRa..." maxlength="190" onkeydown="if(event.key==='Enter')sendLoRaMsg()">
+      </div>
+      <div class="action-buttons-vertical">
+        <button id="lora-send-btn" onclick="sendLoRaMsg()" class="btn btn-primary">Send via LoRa 868</button>
+      </div>
+      <div id="lora-status" style="margin-top:6px;font-size:0.85em;color:var(--sub);text-align:center"></div>
     </div>
   <div class="card" style="grid-column:1/-1">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
@@ -295,6 +306,26 @@ R"rawliteral(
       btn.disabled=false;
       setTimeout(()=>{status.textContent='';status.style.color='var(--sub)';},2500);
     }
+    async function sendLoRaMsg(){
+      const text=document.getElementById('lora-text').value.trim();
+      if(!text) return;
+      const btn=document.getElementById('lora-send-btn');
+      const status=document.getElementById('lora-status');
+      btn.disabled=true; status.textContent='Sending\u2026';
+      try{
+        const r=await fetch('/api/lora/tx',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({payload:text})});
+        const d=await r.json();
+        status.style.color=d.status==='queued'?'#28a745':'#dc3545';
+        status.textContent=d.status==='queued'?'Sent!':d.status||'Error';
+        if(d.status==='queued') document.getElementById('lora-text').value='';
+      }catch(e){
+        status.style.color='#dc3545';
+        status.textContent='Failed';
+      }
+      btn.disabled=false;
+      setTimeout(()=>{status.textContent='';status.style.color='var(--sub)';},2500);
+    }
     function toggleTheme(){
       const isDark=document.documentElement.getAttribute('data-theme')==='dark';
       const next=isDark?'light':'dark';
@@ -365,7 +396,7 @@ R"rawliteral(
       document.getElementById('nodes-empty').style.display='none';
       document.getElementById('nodes-table').style.display='';
       const blueDot='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#58a6ff;margin-right:6px"></span>';
-      nb.innerHTML='<tr><td>'+blueDot+'<span style="color:#58a6ff;font-weight:bold">coordinator</span><br><span style="font-size:0.85em;color:var(--muted)">'+coordMac_+'</span></td><td style="text-align:right;white-space:nowrap">-</td></tr>';
+      nb.innerHTML='<tr><td colspan="3">'+blueDot+'<span style="color:#58a6ff;font-weight:bold">coordinator</span><br><span style="font-size:0.85em;color:var(--muted)">'+coordMac_+'</span></td></tr>';
       const others=nodes.filter(n=>n.mac.toUpperCase()!==coordMac_).sort((a,b)=>{
         if(nodeSort_.col==='name'){
           const na=(a.name||a.mac).toLowerCase(), nb2=(b.name||b.mac).toLowerCase();
@@ -377,7 +408,15 @@ R"rawliteral(
       others.forEach(n=>{
         const dot='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(n.last_seen_seconds_ago<=120?'#3fb950':'#f85149')+';margin-right:6px"></span>';
         const node=n.name?'<span style="color:#58a6ff;font-weight:bold">'+n.name+'</span><br><span style="font-size:0.85em;color:var(--muted)">'+n.mac+'</span>':n.mac;
-        nb.innerHTML+='<tr><td>'+dot+node+'</td><td style="text-align:right;white-space:nowrap">'+n.last_seen_seconds_ago+'s ago</td></tr>';
+        let radioBadge='';
+        if(n.transport==='lora_868'||n.transport==='lora_2400'){
+          const freq=n.transport==='lora_868'?'868':'2.4G';
+          const rssi=n.rssi_dbm!==undefined?('<br><span style="font-size:0.8em;color:var(--muted)">'+n.rssi_dbm+'dBm '+n.snr_db+'dB</span>'):'';
+          radioBadge='<span style="background:#1f4a6e;color:#58a6ff;border-radius:4px;padding:1px 6px;font-size:0.8em;white-space:nowrap">LoRa '+freq+'</span>'+rssi;
+        } else {
+          radioBadge='<span style="background:#1a3a2a;color:#3fb950;border-radius:4px;padding:1px 6px;font-size:0.8em;white-space:nowrap">ESP-NOW</span>';
+        }
+        nb.innerHTML+='<tr><td>'+dot+node+'</td><td style="vertical-align:top;padding-top:4px">'+radioBadge+'</td><td style="text-align:right;white-space:nowrap;vertical-align:top;padding-top:4px">'+n.last_seen_seconds_ago+'s ago</td></tr>';
       });
     }
     function filteredLog(){
@@ -776,6 +815,7 @@ function fixCoord(){
           set('eth-mac',   st.eth_mac);
           set('eth-speed', st.eth_connected?st.eth_speed_mbps+'Mbps '+(st.eth_full_duplex?'Full':'Half')+'-Duplex':'-');
           document.getElementById('mesh-card').style.display='';
+          if(st.has_lora) document.getElementById('lora-card').style.display='';
           const sel=document.getElementById('mesh-ch-sel');
           if(sel&&st.mesh_channel&&!meshChDirty) sel.value=st.mesh_channel;
         }
@@ -898,9 +938,15 @@ void initWebDashboard(AsyncWebServer& server) {
     json += "\"eth_full_duplex\":"  + String(ethOk && isEthFullDuplex() ? "true" : "false") + ",";
     json += "\"mesh_channel\":"     + String(getMeshChannel()) + ",";
     json += "\"ntp_synced\":"       + String(isNtpSynced() ? "true" : "false") + ",";
-    json += "\"ntp_time\":\""       + getNtpTimeStr() + "\"";
+    json += "\"ntp_time\":\""       + getNtpTimeStr() + "\",";
+#ifdef HAS_LORA
+    json += "\"has_lora\":true";
 #else
-    json += "\"eth_present\":false";
+    json += "\"has_lora\":false";
+#endif
+#else
+    json += "\"eth_present\":false,";
+    json += "\"has_lora\":false";
 #endif
     json += "}";
     request->send(200, "application/json", json);
