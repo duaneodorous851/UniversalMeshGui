@@ -269,72 +269,50 @@ static void mqttConnect() {
 AsyncWebServer server(80);
 UniversalMesh mesh;
 
-// --- RECEIVE CALLBACK ---
-// Triggers when the mesh library catches a packet meant for us (or broadcast)
-void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
-  // 1. Immediately log the node in the routing table (mutex protects meshNodes[] and _log[])
+// --- RECEIVE CALLBACK (shared logic) ---
+// fromLora=true  → packet arrived via LoRa,  do NOT re-forward to LoRa (loop prevention)
+// fromLora=false → packet arrived via ESP-NOW, forward a copy to LoRa so pager sees it
+static void handleIncomingPacket(MeshPacket* packet, uint8_t* senderMac, bool fromLora) {
   lockMeshData();
-  updateNodeTable(packet->srcMac);
+  if (!fromLora) updateNodeTable(packet->srcMac);
   logPacket(packet->type, senderMac, packet->srcMac, packet->appId, packet->payload, packet->payloadLen);
   unlockMeshData();
 
-  // 2. Process the packet types
-  if (packet->type == MESH_TYPE_PING && packet->payloadLen > 0) {
-    // Node announced itself with its name in the PING payload (new library discovery)
-    char name[201] = {0};
-    uint8_t len = packet->payloadLen < 200 ? packet->payloadLen : 200;
-    memcpy(name, packet->payload, len);
-    lockMeshData();
-    for (int i = 0; i < MAX_NODES; i++) {
-      if (meshNodes[i].active && memcmp(meshNodes[i].mac, packet->srcMac, 6) == 0) {
-        strncpy(meshNodes[i].name, name, sizeof(meshNodes[i].name) - 1);
-        meshNodes[i].name[sizeof(meshNodes[i].name) - 1] = '\0';
-        break;
-      }
-    }
-    unlockMeshData();
-    char logMsg[80];
-    snprintf(logMsg, sizeof(logMsg), "[DISCOVERY] Node joined: %s", name);
-    Serial.println(logMsg);
-    addSerialLog(logMsg);
-  }
-  else if (packet->type == MESH_TYPE_PONG) {
-    char logMsg[80];
-    snprintf(logMsg, sizeof(logMsg), "[DISCOVERY] PONG from %02X:%02X:%02X:%02X:%02X:%02X",
-             senderMac[0], senderMac[1], senderMac[2],
-             senderMac[3], senderMac[4], senderMac[5]);
-    Serial.println(logMsg);
-    addSerialLog(logMsg);
-  }
-  else if (packet->type == MESH_TYPE_DATA) {
-    char payloadStr[201] = {0};
-    uint8_t len = packet->payloadLen < 200 ? packet->payloadLen : 200;
-    memcpy(payloadStr, packet->payload, len);
+  char payloadStr[201] = {0};
+  uint8_t len = packet->payloadLen < 200 ? packet->payloadLen : 200;
+  memcpy(payloadStr, packet->payload, len);
+  char logMsg[256];
+  snprintf(logMsg, sizeof(logMsg), "[%s RX] type=0x%02X src=%02X:%02X:%02X:%02X:%02X:%02X appId=0x%02X payload=%s",
+           fromLora ? "LORA" : "ESPNOW",
+           packet->type,
+           senderMac[0], senderMac[1], senderMac[2],
+           senderMac[3], senderMac[4], senderMac[5],
+           packet->appId, payloadStr);
+  Serial.println(logMsg);
+  addSerialLog(logMsg);
 
-    if (packet->appId == 0x06) {
-      // Node announce — store name against MAC
-      lockMeshData();
-      for (int i = 0; i < MAX_NODES; i++) {
-        if (meshNodes[i].active && memcmp(meshNodes[i].mac, packet->srcMac, 6) == 0) {
-          strncpy(meshNodes[i].name, payloadStr, sizeof(meshNodes[i].name) - 1);
-          meshNodes[i].name[sizeof(meshNodes[i].name) - 1] = '\0';
-          break;
-        }
-      }
-      unlockMeshData();
-    }
-
-    char logMsg[128];
-    snprintf(logMsg, sizeof(logMsg), "[DATA] src=%02X:%02X:%02X:%02X:%02X:%02X appId=0x%02X payload=%s",
-             senderMac[0], senderMac[1], senderMac[2],
-             senderMac[3], senderMac[4], senderMac[5],
-             packet->appId, payloadStr);
-    Serial.println(logMsg);
-    addSerialLog(logMsg);
-  }
   lockMeshData();
   mqttEnqueue(packet);
   unlockMeshData();
+
+#ifdef HAS_LORA
+  // Bridge: forward ESP-NOW packets to LoRa so the pager sees all mesh traffic
+  if (!fromLora) {
+    loraSendPacket(packet);
+    Serial.printf("[BRIDGE] ESP-NOW→LoRa type=0x%02X src=%02X:%02X appId=0x%02X\n",
+                  packet->type, packet->srcMac[4], packet->srcMac[5], packet->appId);
+  }
+#endif
+}
+
+// Called by the mesh library for ESP-NOW packets
+void onMeshMessage(MeshPacket* packet, uint8_t* senderMac) {
+  handleIncomingPacket(packet, senderMac, false);
+}
+
+// Called by lora.cpp for LoRa-received packets
+static void onLoRaMessage(MeshPacket* packet, uint8_t* senderMac) {
+  handleIncomingPacket(packet, senderMac, true);
 }
 
 void setup() {
@@ -419,8 +397,9 @@ void setup() {
   }
 
 #ifdef HAS_LORA
-  // 2b. Initialize LoRa radio and wire its receive path into onMeshMessage
-  loraOnReceive(onMeshMessage);
+  // 2b. Initialize LoRa radio and wire its receive path into onLoRaMessage
+  //     (separate from ESP-NOW callback to prevent bridging loops)
+  loraOnReceive(onLoRaMessage);
   setupLoRa();
   addSerialLog("[LORA] LR1121 bridge active (868 MHz SF12)");
   // Put LoRa radio in standby when OTA starts — stops ISR storms during flash write

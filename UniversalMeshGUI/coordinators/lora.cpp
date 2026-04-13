@@ -200,15 +200,15 @@ void setupLoRa() {
   // 3. RF switch — must be configured after begin(), before any TX/RX
   _radio.setRfSwitchTable(_rfswitch_pins, _rfswitch_table);
 
-  // 6. Attach TX ISR only (no RX ISR for polling)
+  // Attach both TX-done and RX-done ISRs
   _radio.setPacketSentAction(_isrTx);
-  // No RX ISR: we'll poll in loopLoRa()
+  _radio.setPacketReceivedAction(_isrRx);
   state = _radio.startReceive();
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("[LORA] startReceive FAILED code=%d\n", state);
     return;
   }
-  Serial.println("[LORA] Online — listening for MeshPackets (polling RX).");
+  Serial.println("[LORA] Online — listening for MeshPackets (ISR RX).");
 }
 
 // ---------------------------------------------------------------------------
@@ -251,13 +251,10 @@ void loopLoRa() {
 
 
 
-  // --- 1. RX: Poll for received packet (no ISR) ---
-  static uint32_t lastPoll = 0;
-  const uint32_t pollIntervalMs = 10; // Poll every 10ms
-  if (millis() - lastPoll >= pollIntervalMs) {
-    lastPoll = millis();
-    int16_t state = _radio.available();
-    if (state > 0) {
+  // --- 1. RX: ISR-driven packet receive ---
+  if (_rxReady) {
+    _rxReady = false;
+    if (!_transmitting) {
       int next = (_rxHead + 1) % LORA_RX_QUEUE_SIZE;
       if (next != _rxTail) {  // queue has space
         LoRaRxEntry& e = _rxQueue[_rxHead];
@@ -265,19 +262,19 @@ void loopLoRa() {
         if (pktLen > sizeof(MeshPacket)) pktLen = sizeof(MeshPacket);
         int rd = _radio.readData(e.data, pktLen);
         if (rd == RADIOLIB_ERR_NONE) {
-          Serial.printf("[LORA][POLL] Packet received: len=%d\n", pktLen);
+          Serial.printf("[LORA][RX] Packet received: len=%d\n", pktLen);
           e.len  = pktLen;
           e.rssi = _radio.getRSSI();
           e.snr  = _radio.getSNR();
           _rxHead = next;
         } else {
-          Serial.printf("[LORA][POLL] readData error: %d\n", rd);
+          Serial.printf("[LORA][RX] readData error: %d\n", rd);
         }
       } else {
-        Serial.println("[LORA][POLL] RX queue full — packet dropped");
-        _radio.readData((uint8_t*)nullptr, 0);  // flush the radio buffer
+        Serial.println("[LORA][RX] queue full — packet dropped");
+        _radio.readData((uint8_t*)nullptr, 0);
       }
-      if (!_transmitting) _radio.startReceive();
+      _radio.startReceive();
     }
   }
 
