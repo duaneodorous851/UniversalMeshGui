@@ -127,15 +127,19 @@ void loraOnReceive(MeshReceiveCallback cb) {
 }
 
 // ---------------------------------------------------------------------------
-// ISRs — IRAM_ATTR so they survive cache misses; flag-only, NO SPI here
+// Single ISR for both TX-done and RX-done — RadioLib's LR11x0 routes both
+// setPacketSentAction and setPacketReceivedAction through the same attachInterrupt
+// call, so the second registration overwrites the first.
+// Disambiguate at ISR time using _transmitting: if we were transmitting it's a
+// TX-done event, otherwise it's an RX-done event.
 // ---------------------------------------------------------------------------
-static void IRAM_ATTR _isrRx() {
-  _rxReady = true;
-#ifdef DEBUG
-  // Note: Serial is not safe in ISR, but for debug, you can try toggling a pin or setting a flag.
-#endif
+static void IRAM_ATTR _isrRadio() {
+  if (_transmitting) {
+    _txDone  = true;
+  } else {
+    _rxReady = true;
+  }
 }
-static void IRAM_ATTR _isrTx() { _txDone  = true; }
 
 // RF switch table — LR1121 uses DIO5/DIO6 internally to switch antenna paths.
 // These are virtual RadioLib pin IDs, not ESP32 GPIO numbers.
@@ -200,9 +204,9 @@ void setupLoRa() {
   // 3. RF switch — must be configured after begin(), before any TX/RX
   _radio.setRfSwitchTable(_rfswitch_pins, _rfswitch_table);
 
-  // Attach both TX-done and RX-done ISRs
-  _radio.setPacketSentAction(_isrTx);
-  _radio.setPacketReceivedAction(_isrRx);
+  // One ISR handles both TX-done and RX-done (see comment above _isrRadio)
+  _radio.setPacketSentAction(_isrRadio);
+  _radio.setPacketReceivedAction(_isrRadio);
   state = _radio.startReceive();
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("[LORA] startReceive FAILED code=%d\n", state);
@@ -244,6 +248,32 @@ bool loraSendPacket(MeshPacket* pkt, float freqMHz = 0.0f) {
   return loraSend((const uint8_t*)pkt, wireLen, freqMHz);
 }
 
+// loraBridgePacket() — for ESP-NOW→LoRa bridging.
+// Only forwards appId=0x01 (sensor data). Skips heartbeats (0x05) and announces (0x06).
+// Deduplicates by srcMac: if a queued packet from the same node already exists,
+// overwrite it with the newer data instead of adding another slot.
+// This prevents a chatty node from filling the 4-slot TX queue with stale readings.
+bool loraBridgePacket(MeshPacket* pkt) {
+  if (pkt->appId != 0x01) return false;  // only sensor data worth bridging
+
+  uint8_t wireLen = MESH_HDR_SIZE + pkt->payloadLen;
+  if (wireLen > sizeof(MeshPacket)) wireLen = sizeof(MeshPacket);
+
+  // Scan queue for an existing entry from this srcMac and overwrite it
+  for (int i = _txTail; i != _txHead; i = (i + 1) % LORA_TX_QUEUE_SIZE) {
+    MeshPacket* queued = (MeshPacket*)_txQueue[i].data;
+    if (memcmp(queued->srcMac, pkt->srcMac, 6) == 0) {
+      memcpy(_txQueue[i].data, pkt, wireLen);
+      _txQueue[i].len = wireLen;
+      Serial.printf("[BRIDGE] Replaced queued entry for %02X:%02X with fresher data\n",
+                    pkt->srcMac[4], pkt->srcMac[5]);
+      return true;
+    }
+  }
+  // No existing slot for this MAC — enqueue normally
+  return loraSend((const uint8_t*)pkt, wireLen);
+}
+
 // ---------------------------------------------------------------------------
 // loopLoRa() — call every loop() iteration
 // ---------------------------------------------------------------------------
@@ -252,30 +282,29 @@ void loopLoRa() {
 
 
   // --- 1. RX: ISR-driven packet receive ---
+  // _rxReady is only set by the ISR when !_transmitting, so no TX/RX conflict here.
   if (_rxReady) {
     _rxReady = false;
-    if (!_transmitting) {
-      int next = (_rxHead + 1) % LORA_RX_QUEUE_SIZE;
-      if (next != _rxTail) {  // queue has space
-        LoRaRxEntry& e = _rxQueue[_rxHead];
-        uint8_t pktLen = (uint8_t)_radio.getPacketLength();
-        if (pktLen > sizeof(MeshPacket)) pktLen = sizeof(MeshPacket);
-        int rd = _radio.readData(e.data, pktLen);
-        if (rd == RADIOLIB_ERR_NONE) {
-          Serial.printf("[LORA][RX] Packet received: len=%d\n", pktLen);
-          e.len  = pktLen;
-          e.rssi = _radio.getRSSI();
-          e.snr  = _radio.getSNR();
-          _rxHead = next;
-        } else {
-          Serial.printf("[LORA][RX] readData error: %d\n", rd);
-        }
+    int next = (_rxHead + 1) % LORA_RX_QUEUE_SIZE;
+    if (next != _rxTail) {
+      LoRaRxEntry& e = _rxQueue[_rxHead];
+      uint8_t pktLen = (uint8_t)_radio.getPacketLength();
+      if (pktLen > sizeof(MeshPacket)) pktLen = sizeof(MeshPacket);
+      int rd = _radio.readData(e.data, pktLen);
+      if (rd == RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA][RX] Packet received: len=%d\n", pktLen);
+        e.len  = pktLen;
+        e.rssi = _radio.getRSSI();
+        e.snr  = _radio.getSNR();
+        _rxHead = next;
       } else {
-        Serial.println("[LORA][RX] queue full — packet dropped");
-        _radio.readData((uint8_t*)nullptr, 0);
+        Serial.printf("[LORA][RX] readData error: %d\n", rd);
       }
-      _radio.startReceive();
+    } else {
+      Serial.println("[LORA][RX] queue full — packet dropped");
+      _radio.readData((uint8_t*)nullptr, 0);
     }
+    _radio.startReceive();
   }
 
   // --- 2. Drain RX queue → dispatch to coordinator pipeline ---

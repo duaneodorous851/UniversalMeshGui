@@ -35,6 +35,7 @@ extern void setupLoRa();
 extern void loopLoRa();
 extern void loraStandby();
 extern bool loraSendPacket(MeshPacket* pkt, float freqMHz = 0.0f);
+extern bool loraBridgePacket(MeshPacket* pkt);
 extern void loraOnReceive(MeshReceiveCallback cb);
 #endif
 
@@ -276,6 +277,18 @@ static void handleIncomingPacket(MeshPacket* packet, uint8_t* senderMac, bool fr
   lockMeshData();
   if (!fromLora) updateNodeTable(packet->srcMac);
   logPacket(packet->type, senderMac, packet->srcMac, packet->appId, packet->payload, packet->payloadLen);
+
+  // 0x06 announce payload is the plain node name — store it in the routing table
+  if (packet->appId == 0x06 && packet->payloadLen > 0) {
+    for (int i = 0; i < MAX_NODES; i++) {
+      if (meshNodes[i].active && memcmp(meshNodes[i].mac, packet->srcMac, 6) == 0) {
+        uint8_t nlen = packet->payloadLen < 31 ? packet->payloadLen : 31;
+        memcpy(meshNodes[i].name, packet->payload, nlen);
+        meshNodes[i].name[nlen] = '\0';
+        break;
+      }
+    }
+  }
   unlockMeshData();
 
   char payloadStr[201] = {0};
@@ -296,11 +309,11 @@ static void handleIncomingPacket(MeshPacket* packet, uint8_t* senderMac, bool fr
   unlockMeshData();
 
 #ifdef HAS_LORA
-  // Bridge: forward ESP-NOW packets to LoRa so the pager sees all mesh traffic
+  // Bridge: forward ESP-NOW sensor data (0x01) to LoRa.
+  // loraBridgePacket filters non-0x01 packets and deduplicates by srcMac in the
+  // TX queue, so chatty nodes don't fill the queue with stale readings.
   if (!fromLora) {
-    loraSendPacket(packet);
-    Serial.printf("[BRIDGE] ESP-NOW→LoRa type=0x%02X src=%02X:%02X appId=0x%02X\n",
-                  packet->type, packet->srcMac[4], packet->srcMac[5], packet->appId);
+    loraBridgePacket(packet);
   }
 #endif
 }
