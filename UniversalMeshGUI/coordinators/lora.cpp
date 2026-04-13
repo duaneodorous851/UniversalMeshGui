@@ -200,17 +200,15 @@ void setupLoRa() {
   // 3. RF switch — must be configured after begin(), before any TX/RX
   _radio.setRfSwitchTable(_rfswitch_pins, _rfswitch_table);
 
-  // 6. Attach ISRs and start listening
-  _radio.setPacketReceivedAction(_isrRx);
+  // 6. Attach TX ISR only (no RX ISR for polling)
   _radio.setPacketSentAction(_isrTx);
-
+  // No RX ISR: we'll poll in loopLoRa()
   state = _radio.startReceive();
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("[LORA] startReceive FAILED code=%d\n", state);
     return;
   }
-
-  Serial.println("[LORA] Online — listening for MeshPackets.");
+  Serial.println("[LORA] Online — listening for MeshPackets (polling RX).");
 }
 
 // ---------------------------------------------------------------------------
@@ -253,34 +251,34 @@ void loopLoRa() {
 
 
 
-  // --- 1. RX: ISR set _rxReady, read the packet in safe context ---
-  if (_rxReady) {
-    Serial.println("[LORA][DEBUG] _rxReady set, processing RX");
-    _rxReady = false;
-
-    int next = (_rxHead + 1) % LORA_RX_QUEUE_SIZE;
-    if (next != _rxTail) {  // queue has space
-      LoRaRxEntry& e = _rxQueue[_rxHead];
-      uint8_t pktLen = (uint8_t)_radio.getPacketLength();
-      if (pktLen > sizeof(MeshPacket)) pktLen = sizeof(MeshPacket);
-
-      int state = _radio.readData(e.data, pktLen);
-      if (state == RADIOLIB_ERR_NONE) {
-        Serial.printf("[LORA][DEBUG] Packet received: len=%d\n", pktLen);
-        e.len  = pktLen;
-        e.rssi = _radio.getRSSI();
-        e.snr  = _radio.getSNR();
-        _rxHead = next;
+  // --- 1. RX: Poll for received packet (no ISR) ---
+  static uint32_t lastPoll = 0;
+  const uint32_t pollIntervalMs = 10; // Poll every 10ms
+  if (millis() - lastPoll >= pollIntervalMs) {
+    lastPoll = millis();
+    int16_t state = _radio.available();
+    if (state > 0) {
+      int next = (_rxHead + 1) % LORA_RX_QUEUE_SIZE;
+      if (next != _rxTail) {  // queue has space
+        LoRaRxEntry& e = _rxQueue[_rxHead];
+        uint8_t pktLen = (uint8_t)_radio.getPacketLength();
+        if (pktLen > sizeof(MeshPacket)) pktLen = sizeof(MeshPacket);
+        int rd = _radio.readData(e.data, pktLen);
+        if (rd == RADIOLIB_ERR_NONE) {
+          Serial.printf("[LORA][POLL] Packet received: len=%d\n", pktLen);
+          e.len  = pktLen;
+          e.rssi = _radio.getRSSI();
+          e.snr  = _radio.getSNR();
+          _rxHead = next;
+        } else {
+          Serial.printf("[LORA][POLL] readData error: %d\n", rd);
+        }
       } else {
-        Serial.printf("[LORA][DEBUG] readData error: %d\n", state);
+        Serial.println("[LORA][POLL] RX queue full — packet dropped");
+        _radio.readData((uint8_t*)nullptr, 0);  // flush the radio buffer
       }
-      // Silently discard CRC errors — LoRa CRC handles this
-    } else {
-      Serial.println("[LORA] RX queue full — packet dropped");
-      _radio.readData((uint8_t*)nullptr, 0);  // flush the radio buffer
+      if (!_transmitting) _radio.startReceive();
     }
-
-    if (!_transmitting) _radio.startReceive();
   }
 
   // --- 2. Drain RX queue → dispatch to coordinator pipeline ---
