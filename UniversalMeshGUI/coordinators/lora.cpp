@@ -35,7 +35,7 @@
   #define LORA_BW         125.0f   // 125 kHz bandwidth
 #endif
 #ifndef LORA_SF
-  #define LORA_SF         12       // SF12 = longest range, agreed with node firmware
+  #define LORA_SF         9        // SF9 = ~0.5s/packet (4× faster than SF12), still good range
 #endif
 #ifndef LORA_CR
   #define LORA_CR         5        // Coding rate 4/5
@@ -71,7 +71,7 @@ static volatile int     _rxHead = 0;   // written by ISR via loopLoRa (under fla
 static int              _rxTail = 0;   // read by loopLoRa only
 
 // Non-blocking TX queue  (filled from any context, drained in loopLoRa)
-#define LORA_TX_QUEUE_SIZE 4
+#define LORA_TX_QUEUE_SIZE 12
 
 struct LoRaTxEntry {
   uint8_t data[sizeof(MeshPacket)];
