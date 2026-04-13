@@ -76,6 +76,7 @@ static int              _rxTail = 0;   // read by loopLoRa only
 struct LoRaTxEntry {
   uint8_t data[sizeof(MeshPacket)];
   uint8_t len;
+  float   freqMHz;   // 0 = use configured default (LORA_FREQ_MHZ)
 };
 
 static LoRaTxEntry  _txQueue[LORA_TX_QUEUE_SIZE];
@@ -211,21 +212,24 @@ void setupLoRa() {
 // loraSend() — enqueue raw bytes for TX (safe to call from any context)
 // Returns false if the TX queue is full (packet dropped).
 // ---------------------------------------------------------------------------
-bool loraSend(const uint8_t* data, uint8_t len) {
+bool loraSend(const uint8_t* data, uint8_t len, float freqMHz = 0.0f) {
   int next = (_txHead + 1) % LORA_TX_QUEUE_SIZE;
   if (next == _txTail) return false;  // full
   if (len > sizeof(MeshPacket)) len = sizeof(MeshPacket);
   memcpy(_txQueue[_txHead].data, data, len);
-  _txQueue[_txHead].len = len;
+  _txQueue[_txHead].len     = len;
+  _txQueue[_txHead].freqMHz = freqMHz;
   _txHead = next;
   return true;
 }
 
 // loraSendPacket() — convenience wrapper: only sends header + actual payload,
 // not the unused tail of the 200-byte payload buffer.  Saves airtime.
-bool loraSendPacket(MeshPacket* pkt) {
+// Pass freqMHz > 0 to transmit on a different frequency (e.g. 915.0 for US band).
+// Radio returns to LORA_FREQ_MHZ after transmission.
+bool loraSendPacket(MeshPacket* pkt, float freqMHz = 0.0f) {
   uint8_t wireLen = MESH_HDR_SIZE + pkt->payloadLen;
-  return loraSend((const uint8_t*)pkt, wireLen);
+  return loraSend((const uint8_t*)pkt, wireLen, freqMHz);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,12 +298,19 @@ void loopLoRa() {
     LoRaTxEntry& tx = _txQueue[_txTail];
     _radio.standby();
 
+    // Per-packet frequency override — restore to default after TX
+    if (tx.freqMHz > 0.0f && tx.freqMHz != (float)LORA_FREQ_MHZ) {
+      _radio.setFrequency(tx.freqMHz);
+      Serial.printf("[LORA] TX on %.3f MHz\n", tx.freqMHz);
+    }
+
     int state = _radio.startTransmit(tx.data, tx.len);
     if (state == RADIOLIB_ERR_NONE) {
       _transmitting = true;
     } else {
       Serial.printf("[LORA] TX start failed code=%d\n", state);
       _txTail = (_txTail + 1) % LORA_TX_QUEUE_SIZE;
+      if (tx.freqMHz > 0.0f) _radio.setFrequency((float)LORA_FREQ_MHZ);
       _radio.startReceive();
     }
   }
@@ -309,9 +320,16 @@ void loopLoRa() {
     _txDone       = false;
     _transmitting = false;
     _radio.finishTransmit();
+    float txFreq = _txQueue[_txTail].freqMHz;
     _txTail = (_txTail + 1) % LORA_TX_QUEUE_SIZE;
+    // Restore default listening frequency if we switched for this packet
+    if (txFreq > 0.0f && txFreq != (float)LORA_FREQ_MHZ) {
+      _radio.setFrequency((float)LORA_FREQ_MHZ);
+      Serial.printf("[LORA] TX complete. Restored to %.3f MHz\n", (float)LORA_FREQ_MHZ);
+    } else {
+      Serial.println("[LORA] TX complete.");
+    }
     _radio.startReceive();
-    Serial.println("[LORA] TX complete.");
   }
 }
 
@@ -323,10 +341,10 @@ void loopLoRa() {
 
 #include "UniversalMesh.h"
 
-void setupLoRa()                               {}
-void loopLoRa()                                {}
-bool loraSend(const uint8_t*, uint8_t)         { return false; }
-bool loraSendPacket(MeshPacket*)               { return false; }
-void loraOnReceive(MeshReceiveCallback)        {}
+void setupLoRa()                                      {}
+void loopLoRa()                                       {}
+bool loraSend(const uint8_t*, uint8_t, float)         { return false; }
+bool loraSendPacket(MeshPacket*, float)               { return false; }
+void loraOnReceive(MeshReceiveCallback)               {}
 
 #endif  // HAS_LORA

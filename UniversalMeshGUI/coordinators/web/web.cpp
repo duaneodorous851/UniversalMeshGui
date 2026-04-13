@@ -203,11 +203,33 @@ R"rawliteral(
     <div class="card" id="lora-card" style="display:none">
       <h2>Send via LoRa</h2>
       <div class="row" style="margin-bottom:8px">
+        <span class="lbl">Freq</span>
+        <select id="lora-freq" class="sel" style="flex:1;min-width:0">
+          <option value="868.0">868.0 MHz (EU)</option>
+          <option value="868.3">868.3 MHz (EU)</option>
+          <option value="868.8">868.8 MHz (EU)</option>
+          <option value="902.0">902.0 MHz (US)</option>
+          <option value="903.0">903.0 MHz (US)</option>
+          <option value="904.6">904.6 MHz (US)</option>
+          <option value="915.0">915.0 MHz (US/AU)</option>
+          <option value="920.0">920.0 MHz (AS)</option>
+          <option value="923.0">923.0 MHz (AS)</option>
+          <option value="928.0">928.0 MHz (AS)</option>
+          <option value="950.0">950.0 MHz</option>
+          <option value="960.0">960.0 MHz</option>
+          <option value="2400.0">2400.0 MHz (2.4G)</option>
+          <option value="2425.0">2425.0 MHz (2.4G)</option>
+          <option value="2450.0">2450.0 MHz (2.4G)</option>
+          <option value="2475.0">2475.0 MHz (2.4G)</option>
+          <option value="2483.5">2483.5 MHz (2.4G)</option>
+        </select>
+      </div>
+      <div class="row" style="margin-bottom:8px">
         <span class="lbl">Text</span>
         <input id="lora-text" class="sel" style="flex:1;min-width:0" placeholder="Hello LoRa..." maxlength="190" onkeydown="if(event.key==='Enter')sendLoRaMsg()">
       </div>
       <div class="action-buttons-vertical">
-        <button id="lora-send-btn" onclick="sendLoRaMsg()" class="btn btn-primary">Send via LoRa 868</button>
+        <button id="lora-send-btn" onclick="sendLoRaMsg()" class="btn btn-primary">Send via LoRa</button>
       </div>
       <div id="lora-status" style="margin-top:6px;font-size:0.85em;color:var(--sub);text-align:center"></div>
     </div>
@@ -309,15 +331,16 @@ R"rawliteral(
     async function sendLoRaMsg(){
       const text=document.getElementById('lora-text').value.trim();
       if(!text) return;
+      const freq=parseFloat(document.getElementById('lora-freq').value);
       const btn=document.getElementById('lora-send-btn');
       const status=document.getElementById('lora-status');
       btn.disabled=true; status.textContent='Sending\u2026';
       try{
         const r=await fetch('/api/lora/tx',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({payload:text})});
+          body:JSON.stringify({payload:text,freq})});
         const d=await r.json();
         status.style.color=d.status==='queued'?'#28a745':'#dc3545';
-        status.textContent=d.status==='queued'?'Sent!':d.status||'Error';
+        status.textContent=d.status==='queued'?('Sent on '+d.freq+' MHz'):d.status||'Error';
         if(d.status==='queued') document.getElementById('lora-text').value='';
       }catch(e){
         status.style.color='#dc3545';

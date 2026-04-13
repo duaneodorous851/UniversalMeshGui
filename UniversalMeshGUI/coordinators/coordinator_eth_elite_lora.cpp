@@ -31,7 +31,7 @@ extern String getNtpTimeStr();
 #ifdef HAS_LORA
 extern void setupLoRa();
 extern void loopLoRa();
-extern bool loraSendPacket(MeshPacket* pkt);
+extern bool loraSendPacket(MeshPacket* pkt, float freqMHz = 0.0f);
 extern void loraOnReceive(MeshReceiveCallback cb);
 #endif
 
@@ -531,7 +531,8 @@ void setup() {
       JsonDocument doc;
       deserializeJson(doc, data, len);
       const char* text = doc["payload"] | "";
-      uint8_t textLen = (uint8_t)strnlen(text, 190);
+      float freqMHz    = doc["freq"]    | 0.0f;
+      uint8_t textLen  = (uint8_t)strnlen(text, 190);
 
       MeshPacket pkt = {};
       pkt.type       = MESH_TYPE_DATA;
@@ -543,9 +544,10 @@ void setup() {
       pkt.payloadLen = textLen;
       memcpy(pkt.payload, text, textLen);
 
-      bool ok = loraSendPacket(&pkt);
-      char resp[48];
-      snprintf(resp, sizeof(resp), "{\"status\":\"%s\"}", ok ? "queued" : "queue_full");
+      bool ok = loraSendPacket(&pkt, freqMHz);
+      char resp[64];
+      snprintf(resp, sizeof(resp), "{\"status\":\"%s\",\"freq\":%.3f}",
+               ok ? "queued" : "queue_full", freqMHz > 0 ? freqMHz : (float)868.0);
       request->send(200, "application/json", resp);
     }
   );
