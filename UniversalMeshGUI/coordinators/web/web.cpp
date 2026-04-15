@@ -815,9 +815,16 @@ function fixCoord(){
       _topoAnim=requestAnimationFrame(topoTick);
     }
 
+    // fetch with 2.5s abort — if the ESP32 is busy, fail fast so next cycle starts on time
+    async function fetchJ(url){
+      const ctrl=new AbortController();
+      const id=setTimeout(()=>ctrl.abort(),2500);
+      try{ return await fetch(url,{signal:ctrl.signal}).then(r=>r.json()); }
+      finally{ clearTimeout(id); }
+    }
     async function refreshSlow(){
       try{
-        const st=await fetch('/api/status').then(r=>r.json());
+        const st=await fetchJ('/api/status');
         set('chip',    st.chip);
         set('cores',   st.cores);
         set('cpu',     st.cpu_mhz+' MHz');
@@ -855,8 +862,8 @@ function fixCoord(){
     async function refreshFast(){
       try{
         const [nd,lg]=await Promise.all([
-          fetch('/api/nodes').then(r=>r.json()),
-          fetch('/api/log').then(r=>r.json())
+          fetchJ('/api/nodes'),
+          fetchJ('/api/log')
         ]);
         renderNodes(nd.nodes||[]);
         nodeNames_={};
@@ -921,9 +928,9 @@ function fixCoord(){
       if(_consoleOpen){refreshConsole();_consoleInterval=setInterval(refreshConsole,2000);}
       else{clearInterval(_consoleInterval);_consoleInterval=null;}
     }
-    refreshSlow(); refreshFast();
-    setInterval(refreshSlow,5000);
-    setInterval(refreshFast,1000);
+    // Self-scheduling: next call only fires after previous completes — no pileup
+    (async function loopFast(){ await refreshFast(); setTimeout(loopFast, 1000); })();
+    (async function loopSlow(){ await refreshSlow(); setTimeout(loopSlow, 5000); })();
   </script>
 </body>
 </html>

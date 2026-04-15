@@ -87,12 +87,7 @@ static void startOTA() {
         else if (error == OTA_CONNECT_ERROR) Serial.println("Connect failed");
         else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive failed");
         else if (error == OTA_END_ERROR)     Serial.println("End failed");
-        // Reset state so the device recovers cleanly for the next attempt.
-        // Without this, otaActive stays true and the LoRa radio stays parked.
-        otaActive = false;
-        if (_otaEndCb) _otaEndCb();
     });
-    ArduinoOTA.setTimeout(10000);  // default 1000ms is too short with Ethernet+LoRa SPI latency
     ArduinoOTA.begin();
     otaStarted = true;
     Serial.printf("[OTA] Ready — hostname: %s\n", MESH_HOSTNAME);

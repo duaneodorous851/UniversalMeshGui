@@ -14,7 +14,7 @@
   #define MESH_NETWORK "mesh"
 #endif
 
-#include <ETH.h>
+#include <ETH.h>t
 #include <Preferences.h>
 #include <esp_now.h>
 #include <PubSubClient.h>
@@ -392,7 +392,6 @@ void setup() {
 
   WiFi.setHostname(MESH_HOSTNAME);
   WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(false);  // keep radio on for ESP-NOW but don't join any AP
 
   // --- ETH Elite: Ethernet first, WiFi fallback ---
   setupETH();
@@ -448,7 +447,7 @@ void setup() {
 
   // --- MQTT ---
   _mqtt.setServer(MQTT_BROKER, MQTT_PORT);
-  _mqtt.setSocketTimeout(1);  // 1s max — fast enough to recover, short enough not to stall loop()
+  _mqtt.setSocketTimeout(2);  // 2s max per MQTT op — prevents blocking OTA/mesh
 #ifdef HAS_LORA
   _mqtt.setCallback(mqttLoRaTxCallback);
 #endif
