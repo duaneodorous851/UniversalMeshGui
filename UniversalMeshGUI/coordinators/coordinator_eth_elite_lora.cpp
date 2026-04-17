@@ -162,6 +162,7 @@ static void scheduleLoRaWelcome(const uint8_t* mac, const char* name) {
       _welcomeQueue[i].name[sizeof(_welcomeQueue[i].name) - 1] = '\0';
       _welcomeQueue[i].triggerAt = millis() + 10000UL;
       _welcomeQueue[i].pending   = true;
+      _welcomeQueue[i].ric8Sent  = false;
       char schedMsg[80];
       snprintf(schedMsg, sizeof(schedMsg), "[LORA] Welcome scheduled for %02X:%02X:%02X:%02X:%02X:%02X in 10s",
                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -178,7 +179,6 @@ static void drainLoRaWelcomes() {
   unsigned long now = millis();
   for (int i = 0; i < LORA_WELCOME_QUEUE_SIZE; i++) {
     if (!_welcomeQueue[i].pending || now < _welcomeQueue[i].triggerAt) continue;
-    _welcomeQueue[i].pending = false;
 
     // Node name for the log line (not sent in RIC 8 — that always carries LORA_IDENT)
     char identStr[32];
@@ -191,24 +191,26 @@ static void drainLoRaWelcomes() {
                _welcomeQueue[i].mac[3], _welcomeQueue[i].mac[4], _welcomeQueue[i].mac[5]);
     }
 
-    // RIC 8 — ident: always send, no NTP required
-    char identJson[80];
-    snprintf(identJson, sizeof(identJson), "{\"ric\":8,\"func\":3,\"msg\":\"%s\"}", LORA_IDENT);
-
-    MeshPacket identPkt = {};
-    identPkt.type       = MESH_TYPE_DATA;
-    identPkt.ttl        = 3;
-    identPkt.msgId      = (uint32_t)(millis() ^ (esp_random() & 0xFFFF));
-    memcpy(identPkt.destMac, _welcomeQueue[i].mac, 6);
-    esp_wifi_get_mac(WIFI_IF_STA, identPkt.srcMac);
-    identPkt.appId      = 0x01;
-    identPkt.payloadLen = (uint8_t)strlen(identJson);
-    memcpy(identPkt.payload, identJson, identPkt.payloadLen);
-    loraSendPacket(&identPkt);
-
     char logMsg[128];
 
-    // RIC 224 — time: only if NTP is synced, skip gracefully if not
+    // RIC 8 — send once on first drain
+    if (!_welcomeQueue[i].ric8Sent) {
+      char identJson[80];
+      snprintf(identJson, sizeof(identJson), "{\"ric\":8,\"func\":3,\"msg\":\"%s\"}", LORA_IDENT);
+      MeshPacket identPkt = {};
+      identPkt.type       = MESH_TYPE_DATA;
+      identPkt.ttl        = 3;
+      identPkt.msgId      = (uint32_t)(millis() ^ (esp_random() & 0xFFFF));
+      memcpy(identPkt.destMac, _welcomeQueue[i].mac, 6);
+      esp_wifi_get_mac(WIFI_IF_STA, identPkt.srcMac);
+      identPkt.appId      = 0x01;
+      identPkt.payloadLen = (uint8_t)strlen(identJson);
+      memcpy(identPkt.payload, identJson, identPkt.payloadLen);
+      loraSendPacket(&identPkt);
+      _welcomeQueue[i].ric8Sent = true;
+    }
+
+    // RIC 224 — retry every 30s until NTP is ready
     if (isNtpSynced()) {
       struct tm t;
       getLocalTime(&t);
@@ -216,7 +218,6 @@ static void drainLoRaWelcomes() {
       strftime(timeSuffix, sizeof(timeSuffix), "%y%m%d%H%M%S", &t);
       char timeJson[80];
       snprintf(timeJson, sizeof(timeJson), "{\"ric\":224,\"func\":3,\"msg\":\"YYYYMMDDHHMMSS%s\"}", timeSuffix);
-
       MeshPacket timePkt = {};
       timePkt.type        = MESH_TYPE_DATA;
       timePkt.ttl         = 3;
@@ -227,10 +228,12 @@ static void drainLoRaWelcomes() {
       timePkt.payloadLen  = (uint8_t)strlen(timeJson);
       memcpy(timePkt.payload, timeJson, timePkt.payloadLen);
       loraSendPacket(&timePkt);
-
+      _welcomeQueue[i].pending = false;  // done
       snprintf(logMsg, sizeof(logMsg), "[LORA] Welcomed '%s': RIC8+RIC224 sent", identStr);
     } else {
-      snprintf(logMsg, sizeof(logMsg), "[LORA] Welcomed '%s': RIC8 sent (NTP not synced, RIC224 skipped)", identStr);
+      // Keep entry alive; retry RIC 224 in 30s
+      _welcomeQueue[i].triggerAt = now + 30000UL;
+      snprintf(logMsg, sizeof(logMsg), "[LORA] '%s': RIC8 sent, RIC224 retry in 30s (NTP not synced)", identStr);
     }
 
     Serial.println(logMsg);
