@@ -15,7 +15,9 @@ except ImportError:
 
 # --- CONFIGURATION ---
 
+#COORDINATOR_IP = "universalmesh.local"
 COORDINATOR_IP = "192.168.2.193"
+
 APP_ID_TEXT = 1  # Tells the Gateway to decode as ASCII
 
 # Random message pool
@@ -145,7 +147,6 @@ def select_destination_mac():
                 print("\nHelp: Select a node by number, or press Enter for broadcast. 'r' refreshes the node list. '0' exits.")
                 continue
             if not choice:
-                # Confirm broadcast
                 confirm = input(f"{Fore.YELLOW if COLORAMA else ''}Send to ALL nodes (broadcast)? [y/N]: {Style.RESET_ALL if COLORAMA else ''}").strip().lower()
                 if confirm == 'y':
                     return "FF:FF:FF:FF:FF:FF"
@@ -171,23 +172,26 @@ def is_valid_mac(mac):
 def send_mesh_update(custom_text=None, dest_mac=None):
     url = f"http://{COORDINATOR_IP}/api/tx"
     now = datetime.datetime.now().strftime("%H:%M:%S")
-    if custom_text:
-        msg = custom_text
-    else:
-        msg = random.choice(MESSAGES)
-    full_string = f"[{now}] {msg}"
-    hex_payload = full_string.encode('utf-8').hex().upper()
     mac_to_use = dest_mac or "FF:FF:FF:FF:FF:FF"
     if not is_valid_mac(mac_to_use):
         print(f"{Fore.RED if COLORAMA else ''}Invalid MAC address: {mac_to_use}{Style.RESET_ALL if COLORAMA else ''}")
         return
+    # If the message is a JSON string (options 3 or 4), send it as-is
+    if custom_text and custom_text.strip().startswith('{') and custom_text.strip().endswith('}'):
+        hex_payload = custom_text.encode('utf-8').hex().upper()
+        print(f"Attempting to send: {custom_text} to {mac_to_use}")
+    else:
+        # For normal messages, prepend timestamp and wrap in brackets
+        msg = custom_text if custom_text else random.choice(MESSAGES)
+        full_string = f"[{now}] {msg}"
+        hex_payload = full_string.encode('utf-8').hex().upper()
+        print(f"Attempting to send: {full_string} to {mac_to_use}")
     payload = {
         "dest": mac_to_use,
         "appId": APP_ID_TEXT,
         "ttl": 4,
         "payload": hex_payload
     }
-    print(f"Attempting to send: {full_string} to {payload['dest']}")
     try:
         response = requests.post(url, json=payload, timeout=5)
         if response.status_code == 200:
@@ -207,6 +211,28 @@ if __name__ == "__main__":
     parser.add_argument('-i', '--interval', type=float, default=2.0, help='Interval between messages in seconds (loop mode)')
     parser.add_argument('-d', '--dest', type=str, help='Destination MAC address (overrides interactive selection)')
     parser.add_argument('--no-prompt', action='store_true', help='Skip interactive node selection and use broadcast')
+    parser.add_argument('--ident', action='store_true', help='Send identification message {"ric":8,"func":3,"msg":"PD2EMC"}')
+    parser.add_argument('--pager-time', action='store_true', help='Send pager date/time set message {"ric":224,"func":3,"msg":"YYYYMMDDHHMMSSddmmyyHHMMSS"}')
+    parser.add_argument('--list', action='store_true', help='List all nodes and exit')
+    args = parser.parse_args()
+
+    if args.list:
+        nodes = fetch_nodes()
+        if not nodes:
+            print("No nodes found.")
+        else:
+            print("\nNodes:")
+            for idx, node in enumerate(nodes):
+                mac = node.get("mac", "")
+                name = node.get("name", "")
+                transport = node.get("transport", "")
+                last_seen = node.get("last_seen_seconds_ago", "?")
+                label = f"{idx+1}. {mac}"
+                if name:
+                    label += f" ({name})"
+                label += f" [{transport}, last seen {last_seen}s ago]"
+                print(label)
+        sys.exit(0)
     args = parser.parse_args()
 
 
@@ -220,21 +246,47 @@ if __name__ == "__main__":
     else:
         dest_mac = select_destination_mac()
 
-    # Prompt for message if not provided
-    if args.text is not None:
+    # Command-line message options
+    if args.ident:
+        msg_text = '{"ric":8,"func":3,"msg":"PD2EMC"}'
+    elif args.pager_time:
+        now = datetime.datetime.now()
+        ric = 224
+        func = 3
+        description = "YYYYMMDDHHMMSS"
+        dmyhms = now.strftime("%y%m%d%H%M%S")
+        msg_text = f"{{\"ric\":{ric},\"func\":{func},\"msg\":\"{description}{dmyhms}\"}}"
+    elif args.text is not None:
         msg_text = args.text
     else:
         print("\nChoose message type:")
         print("1. Send random message (default if Enter)")
         print("2. Enter custom text")
+        print("3. Send pager date/time set message")
+        print("4. Send identification message")
         print("(Press Enter to send a random message)")
         while True:
-            choice = input("Select [1-2]: ").strip()
+            choice = input("Select [1-4]: ").strip()
             if choice == "1" or choice == "":
                 msg_text = None
                 break
             elif choice == "2":
                 msg_text = input("Enter your message: ")
+                break
+            elif choice == "3":
+                now = datetime.datetime.now()
+                ric = 224
+                func = 3
+                description = "YYYYMMDDHHMMSS"
+                dmyhms = now.strftime("%y%m%d%H%M%S")
+                pager_msg = f"{{\"ric\":{ric},\"func\":{func},\"msg\":\"{description}{dmyhms}\"}}"
+                print(f"Pager time set message: {pager_msg}")
+                msg_text = pager_msg
+                break
+            elif choice == "4":
+                ident_msg = '{"ric":8,"func":3,"msg":"PD2EMC"}'
+                print(f"Identification message: {ident_msg}")
+                msg_text = ident_msg
                 break
             else:
                 print("Invalid selection. Try again.")
