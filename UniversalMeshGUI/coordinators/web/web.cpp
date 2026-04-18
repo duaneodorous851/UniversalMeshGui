@@ -72,6 +72,11 @@ void logPacket(uint8_t type, uint8_t* senderMac, uint8_t* origSrcMac, uint8_t ap
   if (_logCount < LOG_SIZE) _logCount++;
 }
 
+// --- OTA PSRAM buffer (filled during upload, flashed after TCP transfer is done) ---
+static uint8_t* _otaBuffer  = nullptr;
+static size_t   _otaBufUsed = 0;
+static bool     _otaBufOk   = false;
+
 // --- Serial console log buffer (internal RAM, NOT PSRAM) ---
 #define SERIAL_LOG_LINES    40
 #define SERIAL_LOG_LINE_LEN 120
@@ -132,6 +137,7 @@ R"rawliteral(
       <div class="row"><span class="lbl">MAC</span><span class="val" id="esp-mac">-</span></div>
       <div class="row"><span class="lbl">Uptime</span><span class="val" id="uptime">-</span></div>
       <div class="row"><span class="lbl">Time</span><span class="val" id="ntp-time">-</span></div>
+      <div class="row"><span class="lbl">Build</span><span class="val" id="build-date">-</span></div>
     </div>
     <div class="card" id="wifi-card">
       <h2>WiFi</h2>
@@ -854,6 +860,7 @@ function fixCoord(){
         set('esp-mac', st.esp_mac);
         set('uptime',  fmtUptime(st.uptime_ms));
         set('ntp-time',st.ntp_synced?st.ntp_time:'syncing\u2026');
+        set('build-date',st.build_date||'-');
         set('ssid',    st.ssid);
         set('ip',      st.ip);
         set('gw',      st.gateway);
@@ -861,7 +868,7 @@ function fixCoord(){
         set('ch',      st.channel);
         document.getElementById('wifi-card').style.display=st.wifi_connected?'':'none';
         if(st.eth_present){
-          document.getElementById('eth-card').style.display='';
+          document.getElementById('eth-card').style.display=st.eth_connected?'':'none';
           set('eth-status',st.eth_connected?'\uD83D\uDFE2 Connected':'\uD83D\uDD34 Disconnected');
           set('eth-ip',    st.eth_ip);
           set('eth-subnet',st.eth_subnet);
@@ -959,13 +966,16 @@ function fixCoord(){
       btn.disabled=true; prog.style.display='';
       bar.style.width='0%'; bar.style.background='#f0c040';
       status.style.color='var(--sub)'; status.textContent='Uploading\u2026';
+      let uploadComplete=false;
       const xhr=new XMLHttpRequest();
       xhr.open('POST','/api/ota');
+      xhr.setRequestHeader('Content-Type','application/octet-stream');
       xhr.upload.onprogress=e=>{
         if(e.lengthComputable){
           const pct=Math.round(e.loaded/e.total*100);
           bar.style.width=pct+'%';
           status.textContent='Uploading\u2026 '+pct+'%';
+          if(pct===100){ uploadComplete=true; status.textContent='Transfer done, flashing\u2026'; }
         }
       };
       xhr.onload=()=>{
@@ -979,15 +989,28 @@ function fixCoord(){
             status.style.color='#dc3545'; status.textContent='Error: '+(r.error||'flash failed');
             btn.disabled=false;
           }
-        }catch(e){ bar.style.width='100%'; bar.style.background='#3fb950'; status.style.color='#3fb950'; status.textContent='Done! Rebooting\u2026'; }
+        }catch(e){
+          if(uploadComplete){
+            bar.style.width='100%'; bar.style.background='#3fb950';
+            status.style.color='#3fb950'; status.textContent='Done! Rebooting\u2026';
+          } else {
+            bar.style.background='#dc3545';
+            status.style.color='#dc3545'; status.textContent='Unexpected response';
+            btn.disabled=false;
+          }
+        }
       };
       xhr.onerror=()=>{
-        bar.style.width='100%'; bar.style.background='#3fb950';
-        status.style.color='#3fb950'; status.textContent='Done! Rebooting\u2026';
+        if(uploadComplete){
+          bar.style.width='100%'; bar.style.background='#3fb950';
+          status.style.color='#3fb950'; status.textContent='Done! Rebooting\u2026';
+        } else {
+          bar.style.background='#dc3545';
+          status.style.color='#dc3545'; status.textContent='Upload failed — check connection';
+          btn.disabled=false;
+        }
       };
-      const form=new FormData();
-      form.append('firmware',file,file.name);
-      xhr.send(form);
+      xhr.send(file);
     }
     // Self-scheduling: next call only fires after previous completes — no pileup
     (async function loopFast(){ await refreshFast(); setTimeout(loopFast, 1000); })();
@@ -1043,6 +1066,7 @@ void initWebDashboard(AsyncWebServer& server) {
     json += "\"free_heap\":"    + String(ESP.getFreeHeap())         + ",";
     json += "\"esp_mac\":\""    + String(WiFi.macAddress())         + "\",";
     json += "\"uptime_ms\":"    + String(millis())                  + ",";
+    json += "\"build_date\":\"" + String(__DATE__) + " " + String(__TIME__) + "\",";
     json += "\"ssid\":\""       + WiFi.SSID()                       + "\",";
     json += "\"ip\":\""         + WiFi.localIP().toString()         + "\",";
     json += "\"gateway\":\""    + WiFi.gatewayIP().toString()       + "\",";
@@ -1138,14 +1162,32 @@ void initWebDashboard(AsyncWebServer& server) {
     ESP.restart();
   });
 
+  // OTA upload: buffer firmware in PSRAM during TCP transfer, flash only after
+  // the transfer is complete. This keeps flash writes off the AsyncTCP task so
+  // interrupt masking during flash write can't stall the TCP receive path.
   server.on("/api/ota", HTTP_POST,
     [](AsyncWebServerRequest* request) {
-      bool ok = !Update.hasError();
+      if (!_otaBufOk || !_otaBuffer || _otaBufUsed == 0) {
+        String err = _otaBuffer ? "incomplete upload" : "buffer alloc failed";
+        addSerialLog(("[OTA] Aborted: " + err).c_str());
+        if (_otaBuffer) { free(_otaBuffer); _otaBuffer = nullptr; }
+#ifdef HAS_LORA
+        loraResume();
+#endif
+        request->send(500, "application/json", "{\"status\":\"error\",\"error\":\"" + err + "\"}");
+        return;
+      }
+      // Flash write happens here — TCP transfer is fully done, no interference
+      Serial.printf("[OTA] Flashing %u bytes from PSRAM...\n", _otaBufUsed);
+      bool ok = Update.begin(_otaBufUsed, U_FLASH)
+             && (Update.write(_otaBuffer, _otaBufUsed) == _otaBufUsed)
+             && Update.end(true);
+      free(_otaBuffer); _otaBuffer = nullptr;
       if (ok) {
-        addSerialLog("[OTA] HTTP flash complete — rebooting");
+        addSerialLog("[OTA] Flash complete — rebooting");
         request->send(200, "application/json", "{\"status\":\"ok\"}");
-        delay(500);
-        ESP.restart();
+        xTaskCreate([](void*) { vTaskDelay(600 / portTICK_PERIOD_MS); ESP.restart(); },
+                    "ota_rb", 2048, nullptr, 1, nullptr);
       } else {
         String err = Update.errorString();
         addSerialLog(("[OTA] Flash error: " + err).c_str());
@@ -1155,25 +1197,28 @@ void initWebDashboard(AsyncWebServer& server) {
         request->send(500, "application/json", "{\"status\":\"error\",\"error\":\"" + err + "\"}");
       }
     },
-    [](AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
-      if (!index) {
-        Serial.printf("[OTA] HTTP upload: %s (%u bytes)\n", filename.c_str(), request->contentLength());
-        addSerialLog("[OTA] HTTP firmware upload started");
+    nullptr,
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      if (index == 0) {
+        _otaBufOk   = false;
+        _otaBufUsed = 0;
+        if (_otaBuffer) { free(_otaBuffer); _otaBuffer = nullptr; }
+        _otaBuffer = total > 0 ? (uint8_t*)ps_malloc(total) : nullptr;
+        if (!_otaBuffer) {
+          Serial.printf("[OTA] ps_malloc(%u) failed\n", total);
+          addSerialLog("[OTA] PSRAM alloc failed");
+          return;
+        }
+        _otaBufOk = true;
+        Serial.printf("[OTA] Buffering %u bytes in PSRAM\n", total);
+        addSerialLog("[OTA] Firmware upload started — buffering in PSRAM");
 #ifdef HAS_LORA
         loraStandby();
 #endif
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
-          Serial.printf("[OTA] begin() error: %s\n", Update.errorString());
-          addSerialLog("[OTA] begin() failed");
-        }
       }
-      if (len && Update.write(data, len) != len) {
-        Serial.printf("[OTA] write error: %s\n", Update.errorString());
-      }
-      if (final) {
-        if (!Update.end(true)) {
-          Serial.printf("[OTA] end() error: %s\n", Update.errorString());
-        }
+      if (_otaBufOk && _otaBuffer) {
+        memcpy(_otaBuffer + index, data, len);
+        _otaBufUsed = index + len;
       }
     }
   );

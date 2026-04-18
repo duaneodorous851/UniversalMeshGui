@@ -160,11 +160,11 @@ static void scheduleLoRaWelcome(const uint8_t* mac, const char* name) {
       memcpy(_welcomeQueue[i].mac, mac, 6);
       strncpy(_welcomeQueue[i].name, name ? name : "", sizeof(_welcomeQueue[i].name) - 1);
       _welcomeQueue[i].name[sizeof(_welcomeQueue[i].name) - 1] = '\0';
-      _welcomeQueue[i].triggerAt = millis() + 10000UL;
+      _welcomeQueue[i].triggerAt = millis() + 5000UL;
       _welcomeQueue[i].pending   = true;
       _welcomeQueue[i].ric8Sent  = false;
       char schedMsg[80];
-      snprintf(schedMsg, sizeof(schedMsg), "[LORA] Welcome scheduled for %02X:%02X:%02X:%02X:%02X:%02X in 10s",
+      snprintf(schedMsg, sizeof(schedMsg), "[LORA] Welcome scheduled for %02X:%02X:%02X:%02X:%02X:%02X in 5s",
                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
       Serial.println(schedMsg);
       addSerialLog(schedMsg);
@@ -207,7 +207,12 @@ static void drainLoRaWelcomes() {
       identPkt.payloadLen = (uint8_t)strlen(identJson);
       memcpy(identPkt.payload, identJson, identPkt.payloadLen);
       loraSendPacket(&identPkt);
-      _welcomeQueue[i].ric8Sent = true;
+      _welcomeQueue[i].ric8Sent  = true;
+      _welcomeQueue[i].triggerAt = now + 5000UL;  // RIC 224 follows in 5s
+      snprintf(logMsg, sizeof(logMsg), "[LORA] '%s': RIC8 sent, RIC224 in 5s", identStr);
+      Serial.println(logMsg);
+      addSerialLog(logMsg);
+      continue;  // enforce the 5s gap — don't fall through to RIC 224 this iteration
     }
 
     // RIC 224 — retry every 30s until NTP is ready
